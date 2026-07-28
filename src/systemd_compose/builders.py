@@ -6,7 +6,7 @@ import re
 import shlex
 
 from systemd_compose.errors import SystemdComposeError
-from systemd_compose.models import Service
+from systemd_compose.models import Resources, Service
 
 BWRAP_PATH = "/usr/bin/bwrap"
 DESCRIPTION_HASH_PREFIX = "systemd-compose-hash="
@@ -100,6 +100,9 @@ def build_systemd_run_command(project_name: str, service_name: str, service: Ser
     if service.restart is not None:
         command.extend(["-p", f"Restart={service.restart}"])
 
+    for property_value in build_resource_properties(service.resources):
+        command.extend(["-p", property_value])
+
     command.extend(build_service_payload(service))
     return command
 
@@ -118,6 +121,7 @@ def service_definition_hash(project_name: str, service_name: str, service: Servi
         "accounting": ACCOUNTING_PROPERTIES,
         "dependencies": [f"{unit_name(project_name, dependency)}.service" for dependency in service.depends_on],
         "restart": service.restart,
+        "resources": build_resource_properties(service.resources),
         "payload": build_service_payload(service),
     }
     encoded = json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -162,3 +166,23 @@ def _command_argv(service: Service) -> list[str]:
     if not argv:
         raise SystemdComposeError(f"service {service.name!r} command cannot be empty")
     return argv
+
+
+def build_resource_properties(resources: Resources | None) -> list[str]:
+    if resources is None:
+        return []
+
+    properties: list[str] = []
+    if resources.mem_limit is not None:
+        properties.append(f"MemoryMax={resources.mem_limit}")
+    if resources.cpus is not None:
+        properties.append(f"CPUQuota={_cpu_quota(resources.cpus)}")
+    if resources.pids_limit is not None:
+        properties.append(f"TasksMax={resources.pids_limit}")
+    return properties
+
+
+def _cpu_quota(cpus: str) -> str:
+    if cpus.endswith("%"):
+        return cpus
+    return f"{float(cpus) * 100:g}%"

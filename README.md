@@ -55,6 +55,11 @@ do not delegate memory or I/O controllers. Resource fields show `-` when the
 corresponding metric is unavailable; network I/O is commonly unavailable for
 ordinary user services.
 
+Services can set Docker Compose-like resource limits. `mem_limit` maps to
+systemd `MemoryMax=`, `cpus` maps to `CPUQuota=`, and `pids_limit` maps to
+`TasksMax=`. For `cpus`, `1.0` means one full CPU, `0.5` means half of one CPU,
+and values above `1.0` can use more than one CPU on multicore systems.
+
 Example `systemd-compose.yaml`:
 
 ```yaml
@@ -68,6 +73,9 @@ services:
       - "/srv/site:/app:ro"
     tmpfs:
       - "/var/lib/nginx"
+    mem_limit: 512m
+    cpus: 0.5
+    pids_limit: 128
     restart: on-failure
     depends_on:
       - db

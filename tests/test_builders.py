@@ -1,5 +1,5 @@
 from systemd_compose.builders import build_bwrap_args, build_service_payload, build_systemd_run_command, service_definition_hash
-from systemd_compose.models import Service, Volume
+from systemd_compose.models import Resources, Service, Volume
 
 
 def test_service_payload_always_starts_with_bwrap():
@@ -90,3 +90,36 @@ def test_systemd_run_command_includes_dependencies_restart_and_bwrap_payload():
         command.index("Restart=on-failure") - 1 : command.index("Restart=on-failure") + 1
     ]
     assert "/usr/bin/bwrap" in command
+
+
+def test_systemd_run_command_includes_resource_limits():
+    service = Service(
+        name="web",
+        command="python -m http.server",
+        resources=Resources(mem_limit="512M", cpus="0.5", pids_limit=128),
+    )
+
+    command = build_systemd_run_command("demo", "web", service)
+
+    assert ["-p", "MemoryMax=512M"] == command[
+        command.index("MemoryMax=512M") - 1 : command.index("MemoryMax=512M") + 1
+    ]
+    assert ["-p", "CPUQuota=50%"] == command[
+        command.index("CPUQuota=50%") - 1 : command.index("CPUQuota=50%") + 1
+    ]
+    assert ["-p", "TasksMax=128"] == command[
+        command.index("TasksMax=128") - 1 : command.index("TasksMax=128") + 1
+    ]
+
+
+def test_service_definition_hash_changes_when_resource_limits_change():
+    base_service = Service(name="web", command="python -m http.server")
+    limited_service = Service(
+        name="web",
+        command="python -m http.server",
+        resources=Resources(mem_limit="512M"),
+    )
+
+    assert service_definition_hash("demo", "web", base_service) != service_definition_hash(
+        "demo", "web", limited_service
+    )

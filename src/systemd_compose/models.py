@@ -11,6 +11,13 @@ class Volume:
 
 
 @dataclass(frozen=True)
+class Resources:
+    mem_limit: str | None = None
+    cpus: str | None = None
+    pids_limit: int | None = None
+
+
+@dataclass(frozen=True)
 class Service:
     name: str
     command: str | list[str]
@@ -20,6 +27,7 @@ class Service:
     depends_on: list[str] = field(default_factory=list)
     working_dir: str | None = None
     restart: str | None = None
+    resources: Resources | None = None
 
 
 @dataclass(frozen=True)

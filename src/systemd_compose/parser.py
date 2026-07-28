@@ -6,7 +6,10 @@ from typing import Any
 import yaml
 
 from systemd_compose.errors import SystemdComposeError
-from systemd_compose.models import ComposeConfig, Service, Volume
+from systemd_compose.models import ComposeConfig, Resources, Service, Volume
+
+RESOURCE_KEYS = {"mem_limit", "cpus", "pids_limit"}
+MEMORY_UNITS = {"b": "", "k": "K", "m": "M", "g": "G", "t": "T", "p": "P", "e": "E"}
 
 
 def parse_compose_file(path: str | Path) -> ComposeConfig:
@@ -51,6 +54,7 @@ def parse_compose_data(data: Any, *, source: str = "<compose>") -> ComposeConfig
             depends_on=_parse_depends_on(raw_service.get("depends_on"), source, name),
             working_dir=_optional_string(raw_service, "working_dir", source, name),
             restart=_optional_string(raw_service, "restart", source, name),
+            resources=_parse_resources(raw_service, source, name),
         )
 
     for service in services.values():
@@ -143,3 +147,82 @@ def _optional_string(raw_service: dict[str, Any], key: str, source: str, service
     if isinstance(value, str) and value:
         return value
     raise SystemdComposeError(f"{source}: service {service_name!r} {key} must be a non-empty string")
+
+
+def _parse_resources(raw_service: dict[str, Any], source: str, service_name: str) -> Resources | None:
+    if "resources" in raw_service:
+        raise SystemdComposeError(
+            f"{source}: service {service_name!r} resources is not supported; "
+            "use mem_limit, cpus, or pids_limit"
+        )
+
+    values = {key: raw_service.get(key) for key in RESOURCE_KEYS if key in raw_service}
+    if not values:
+        return None
+
+    return Resources(
+        mem_limit=_parse_mem_limit(values.get("mem_limit"), source, service_name),
+        cpus=_parse_cpus(values.get("cpus"), source, service_name),
+        pids_limit=_parse_pids_limit(values.get("pids_limit"), source, service_name),
+    )
+
+
+def _parse_mem_limit(value: Any, source: str, service_name: str) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return str(value)
+    if isinstance(value, str) and value.strip():
+        mem_limit = value.strip()
+        numeric_value = mem_limit
+        unit = ""
+        if mem_limit[-1].isalpha():
+            unit_key = mem_limit[-1].lower()
+            if unit_key not in MEMORY_UNITS:
+                raise SystemdComposeError(
+                    f"{source}: service {service_name!r} resources.mem_limit must be a positive size"
+                )
+            numeric_value = mem_limit[:-1]
+            unit = MEMORY_UNITS[unit_key]
+        try:
+            parsed = float(numeric_value)
+        except ValueError as exc:
+            raise SystemdComposeError(
+                f"{source}: service {service_name!r} resources.mem_limit must be a positive size"
+            ) from exc
+        if parsed > 0:
+            return f"{numeric_value}{unit}"
+    raise SystemdComposeError(
+        f"{source}: service {service_name!r} resources.mem_limit must be a positive size"
+    )
+
+
+def _parse_cpus(value: Any, source: str, service_name: str) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, int | float) and not isinstance(value, bool) and value > 0:
+        return str(value)
+    if isinstance(value, str) and value.strip():
+        cpus = value.strip()
+        numeric_value = cpus[:-1] if cpus.endswith("%") else cpus
+        try:
+            parsed = float(numeric_value)
+        except ValueError as exc:
+            raise SystemdComposeError(
+                f"{source}: service {service_name!r} resources.cpus must be a positive number or percentage"
+            ) from exc
+        if parsed > 0:
+            return cpus
+    raise SystemdComposeError(
+        f"{source}: service {service_name!r} resources.cpus must be a positive number or percentage"
+    )
+
+
+def _parse_pids_limit(value: Any, source: str, service_name: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    raise SystemdComposeError(
+        f"{source}: service {service_name!r} resources.pids_limit must be a positive integer"
+    )

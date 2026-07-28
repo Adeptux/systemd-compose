@@ -1,5 +1,12 @@
-from systemd_compose.builders import build_bwrap_args, build_service_payload, build_systemd_run_command, service_definition_hash
-from systemd_compose.models import Resources, Service, Volume
+from systemd_compose.builders import (
+    build_bwrap_args,
+    build_health_service_payload,
+    build_health_systemd_run_command,
+    build_service_payload,
+    build_systemd_run_command,
+    service_definition_hash,
+)
+from systemd_compose.models import Healthcheck, Resources, Service, Volume
 
 
 def test_service_payload_always_starts_with_bwrap():
@@ -122,4 +129,57 @@ def test_service_definition_hash_changes_when_resource_limits_change():
 
     assert service_definition_hash("demo", "web", base_service) != service_definition_hash(
         "demo", "web", limited_service
+    )
+
+
+def test_health_systemd_run_command_uses_timer_and_bwrap_payload():
+    service = Service(
+        name="web",
+        command="python -m http.server 8000",
+        healthcheck=Healthcheck(
+            test=["CMD", "curl", "-f", "http://127.0.0.1:8000"],
+            interval="10s",
+            timeout="2s",
+            start_period="5s",
+        ),
+    )
+
+    command = build_health_systemd_run_command("demo", "web", service)
+
+    assert command is not None
+    assert command[:3] == ["systemd-run", "--user", "--unit=demo-web-health"]
+    assert "--on-active=5s" in command
+    assert "--on-unit-active=10s" in command
+    assert ["-p", "TimeoutStartSec=2s"] == command[
+        command.index("TimeoutStartSec=2s") - 1 : command.index("TimeoutStartSec=2s") + 1
+    ]
+    pairs = list(zip(command, command[1:], strict=False))
+    assert ("--timer-property", "Requires=demo-web.service") in pairs
+    assert ("-p", "Requires=demo-web.service") in pairs
+    assert "/usr/bin/bwrap" in command
+    assert command[-4:] == ["--", "curl", "-f", "http://127.0.0.1:8000"]
+
+
+def test_health_service_payload_supports_shell_form():
+    service = Service(
+        name="web",
+        command="python -m http.server 8000",
+        healthcheck=Healthcheck(test="curl -f http://127.0.0.1:8000"),
+    )
+
+    payload = build_health_service_payload(service)
+
+    assert payload[-3:] == ["/bin/sh", "-c", "curl -f http://127.0.0.1:8000"]
+
+
+def test_service_definition_hash_changes_when_healthcheck_changes():
+    base_service = Service(name="web", command="python -m http.server")
+    checked_service = Service(
+        name="web",
+        command="python -m http.server",
+        healthcheck=Healthcheck(test="true"),
+    )
+
+    assert service_definition_hash("demo", "web", base_service) != service_definition_hash(
+        "demo", "web", checked_service
     )

@@ -6,10 +6,11 @@ from typing import Any
 import yaml
 
 from systemd_compose.errors import SystemdComposeError
-from systemd_compose.models import ComposeConfig, Resources, Service, Volume
+from systemd_compose.models import ComposeConfig, Healthcheck, Resources, Service, Volume
 
 RESOURCE_KEYS = {"mem_limit", "cpus", "pids_limit"}
 MEMORY_UNITS = {"b": "", "k": "K", "m": "M", "g": "G", "t": "T", "p": "P", "e": "E"}
+HEALTHCHECK_KEYS = {"test", "interval", "timeout", "start_period", "retries", "disable"}
 
 
 def parse_compose_file(path: str | Path) -> ComposeConfig:
@@ -55,6 +56,7 @@ def parse_compose_data(data: Any, *, source: str = "<compose>") -> ComposeConfig
             working_dir=_optional_string(raw_service, "working_dir", source, name),
             restart=_optional_string(raw_service, "restart", source, name),
             resources=_parse_resources(raw_service, source, name),
+            healthcheck=_parse_healthcheck(raw_service.get("healthcheck"), source, name),
         )
 
     for service in services.values():
@@ -226,3 +228,98 @@ def _parse_pids_limit(value: Any, source: str, service_name: str) -> int | None:
     raise SystemdComposeError(
         f"{source}: service {service_name!r} resources.pids_limit must be a positive integer"
     )
+
+
+def _parse_healthcheck(value: Any, source: str, service_name: str) -> Healthcheck | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise SystemdComposeError(f"{source}: service {service_name!r} healthcheck must be a mapping")
+
+    unknown_keys = sorted(str(key) for key in value if key not in HEALTHCHECK_KEYS)
+    if unknown_keys:
+        keys = ", ".join(unknown_keys)
+        raise SystemdComposeError(f"{source}: service {service_name!r} healthcheck has unknown key(s): {keys}")
+
+    disabled = _parse_optional_bool(value.get("disable"), "healthcheck.disable", source, service_name)
+    raw_test = value.get("test")
+    if disabled:
+        return Healthcheck(test=["NONE"], disabled=True)
+    if raw_test is None:
+        raise SystemdComposeError(f"{source}: service {service_name!r} healthcheck.test is required")
+    test = _parse_healthcheck_test(raw_test, source, service_name)
+    if isinstance(test, list) and test[0] == "NONE":
+        return Healthcheck(test=test, disabled=True)
+
+    return Healthcheck(
+        test=test,
+        interval=_parse_duration(value.get("interval"), "healthcheck.interval", source, service_name, default="30s"),
+        timeout=_parse_duration(value.get("timeout"), "healthcheck.timeout", source, service_name, default="30s"),
+        start_period=_parse_duration(
+            value.get("start_period"), "healthcheck.start_period", source, service_name, default="0s"
+        ),
+        retries=_parse_positive_int(value.get("retries"), "healthcheck.retries", source, service_name, default=3),
+    )
+
+
+def _parse_healthcheck_test(value: Any, source: str, service_name: str) -> str | list[str]:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, list) and value and all(isinstance(item, str) and item for item in value):
+        mode = value[0]
+        if mode not in {"CMD", "CMD-SHELL", "NONE"}:
+            raise SystemdComposeError(
+                f"{source}: service {service_name!r} healthcheck.test list must start with CMD, CMD-SHELL, or NONE"
+            )
+        if mode == "NONE" and len(value) != 1:
+            raise SystemdComposeError(
+                f"{source}: service {service_name!r} healthcheck.test NONE must not include a command"
+            )
+        if mode in {"CMD", "CMD-SHELL"} and len(value) < 2:
+            raise SystemdComposeError(
+                f"{source}: service {service_name!r} healthcheck.test {mode} requires a command"
+            )
+        return list(value)
+    raise SystemdComposeError(
+        f"{source}: service {service_name!r} healthcheck.test must be a non-empty string or list"
+    )
+
+
+def _parse_duration(value: Any, key: str, source: str, service_name: str, *, default: str) -> str:
+    if value is None:
+        return default
+    if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0:
+        return f"{value:g}s"
+    if isinstance(value, str) and value.strip():
+        duration = value.strip()
+        suffixes = ("ms", "s", "m", "h")
+        numeric_value = duration
+        for suffix in suffixes:
+            if duration.endswith(suffix):
+                numeric_value = duration.removesuffix(suffix)
+                break
+        try:
+            parsed = float(numeric_value)
+        except ValueError as exc:
+            raise SystemdComposeError(
+                f"{source}: service {service_name!r} {key} must be a non-negative duration"
+            ) from exc
+        if parsed >= 0:
+            return duration
+    raise SystemdComposeError(f"{source}: service {service_name!r} {key} must be a non-negative duration")
+
+
+def _parse_positive_int(value: Any, key: str, source: str, service_name: str, *, default: int) -> int:
+    if value is None:
+        return default
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    raise SystemdComposeError(f"{source}: service {service_name!r} {key} must be a positive integer")
+
+
+def _parse_optional_bool(value: Any, key: str, source: str, service_name: str) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    raise SystemdComposeError(f"{source}: service {service_name!r} {key} must be a boolean")

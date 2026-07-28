@@ -9,8 +9,10 @@ import time
 from pathlib import Path
 
 from systemd_compose.builders import (
+    build_health_systemd_run_command,
     build_systemd_run_command,
     extract_definition_hash,
+    health_unit_name,
     service_definition_hash,
     unit_name,
     unit_prefix,
@@ -45,6 +47,13 @@ STATS_PROPERTIES = [
     "IOReadBytes",
     "IOWriteBytes",
     "TasksCurrent",
+]
+HEALTH_PROPERTIES = [
+    "LoadState",
+    "ActiveState",
+    "Result",
+    "ExecMainStatus",
+    "InactiveExitTimestamp",
 ]
 MISSING_SYSTEMD_VALUES = {"", "[not set]", "[no data]", "infinity", "max", "18446744073709551615"}
 CGROUP_ROOT = Path("/sys/fs/cgroup")
@@ -103,6 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="stop project units that are no longer present in the compose file",
     )
+    up_parser.add_argument("services", nargs="*", help="service names; omit to submit every service")
     up_parser.set_defaults(handler=handle_up)
 
     start_parser = subparsers.add_parser("start", help="start existing submitted services")
@@ -123,6 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also stop project units that are no longer present in the compose file",
     )
+    down_parser.add_argument("services", nargs="*", help="service names; omit to stop every service")
     down_parser.set_defaults(handler=handle_down)
 
     status_parser = subparsers.add_parser("status", help="show systemd status for submitted services")
@@ -152,13 +163,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     stats_parser.set_defaults(handler=handle_stats)
 
+    health_parser = subparsers.add_parser("health", help="show service healthcheck status")
+    health_parser.add_argument("services", nargs="*", help="service names; omit to show every service")
+    health_parser.set_defaults(handler=handle_health)
+
     logs_parser = subparsers.add_parser(
         "logs",
-        help="follow journal logs for services",
+        help="show journal logs for services",
         description=(
-            "Follow journal logs for all compose services by default, or for the listed services. "
+            "Show journal logs for all compose services by default, or for the listed services. "
             "Pass journalctl arguments after '--'."
         ),
+    )
+    logs_parser.add_argument(
+        "-f",
+        "--follow",
+        action="store_true",
+        help="follow journal logs",
     )
     logs_parser.add_argument(
         "log_args",
@@ -173,6 +194,7 @@ def build_parser() -> argparse.ArgumentParser:
 def handle_up(args: argparse.Namespace) -> int | None:
     config = parse_compose_file(resolve_compose_file(args.file))
     project_name = resolve_project_name(args.project_name)
+    service_names = selected_service_names(config.services, args.services)
     exit_code = 0
     orphans = find_orphan_units(project_name, set(config.services)) if args.remove_orphans or not args.dry_run else []
 
@@ -192,11 +214,15 @@ def handle_up(args: argparse.Namespace) -> int | None:
             "Use --remove-orphans to stop them."
         )
 
-    for service_name, service in config.services.items():
+    for service_name in service_names:
+        service = config.services[service_name]
         unit = unit_name(project_name, service_name)
         command = build_systemd_run_command(project_name, service_name, service)
+        health_command = build_health_systemd_run_command(project_name, service_name, service)
         if args.dry_run:
             print(shlex.join(command))
+            if health_command is not None:
+                print(shlex.join(health_command))
         else:
             loaded_unit = inspect_unit(unit)
             desired_hash = service_definition_hash(project_name, service_name, service)
@@ -208,10 +234,13 @@ def handle_up(args: argparse.Namespace) -> int | None:
                     print(f"Starting unchanged non-running unit: {unit}.service ({loaded_unit.active_state})")
                     ensure_volume_host_paths(service)
                     service_exit_code = start_existing_unit(unit)
+                    if service_exit_code == 0:
+                        service_exit_code = start_health_unit(project_name, service_name, service)
                     if service_exit_code != 0 and exit_code == 0:
                         exit_code = service_exit_code
                     continue
                 print(f"Recreating changed unit: {unit}.service")
+                cleanup_health_units(project_name, service_name)
                 cleanup_exit_code = cleanup_unit(unit, reset_failed=True)
                 if cleanup_exit_code != 0:
                     raise SystemdComposeError(f"could not recreate {unit}.service")
@@ -226,6 +255,8 @@ def handle_up(args: argparse.Namespace) -> int | None:
                 continue
             ensure_volume_host_paths(service)
             run_command(command)
+            if health_command is not None:
+                run_command(health_command)
 
     return None if args.dry_run else exit_code
 
@@ -248,6 +279,8 @@ def handle_start(args: argparse.Namespace) -> int:
             continue
         ensure_volume_host_paths(config.services[service_name])
         service_exit_code = start_existing_unit(unit)
+        if service_exit_code == 0:
+            service_exit_code = start_health_unit(project_name, service_name, config.services[service_name])
         if service_exit_code != 0 and exit_code == 0:
             exit_code = service_exit_code
 
@@ -262,6 +295,9 @@ def handle_stop(args: argparse.Namespace) -> int:
 
     for service_name in reversed(service_names):
         unit = unit_name(project_name, service_name)
+        health_exit_code = stop_health_units(project_name, service_name, config.services[service_name])
+        if health_exit_code != 0 and exit_code == 0:
+            exit_code = health_exit_code
         service_exit_code = stop_unit(unit)
         if service_exit_code != 0 and exit_code == 0:
             exit_code = service_exit_code
@@ -284,6 +320,8 @@ def handle_restart(args: argparse.Namespace) -> int:
             continue
         ensure_volume_host_paths(config.services[service_name])
         service_exit_code = restart_existing_unit(unit)
+        if service_exit_code == 0:
+            service_exit_code = start_health_unit(project_name, service_name, config.services[service_name])
         if service_exit_code != 0 and exit_code == 0:
             exit_code = service_exit_code
 
@@ -293,10 +331,14 @@ def handle_restart(args: argparse.Namespace) -> int:
 def handle_down(args: argparse.Namespace) -> int:
     config = parse_compose_file(resolve_compose_file(args.file))
     project_name = resolve_project_name(args.project_name)
+    service_names = selected_service_names(config.services, args.services)
     exit_code = 0
 
-    for service_name in reversed(list(config.services)):
+    for service_name in reversed(service_names):
         unit = unit_name(project_name, service_name)
+        health_exit_code = cleanup_health_units(project_name, service_name, config.services[service_name])
+        if health_exit_code != 0 and exit_code == 0:
+            exit_code = health_exit_code
         service_exit_code = cleanup_unit(unit, reset_failed=True)
         if service_exit_code != 0 and exit_code == 0:
             exit_code = service_exit_code
@@ -375,6 +417,17 @@ def handle_stats(args: argparse.Namespace) -> None:
         time.sleep(args.interval)
 
 
+def handle_health(args: argparse.Namespace) -> None:
+    config = parse_compose_file(resolve_compose_file(args.file))
+    project_name = resolve_project_name(args.project_name)
+    service_names = selected_service_names(config.services, args.services)
+    rows = [
+        build_health_row(project_name, service_name, config.services[service_name])
+        for service_name in service_names
+    ]
+    print_table(["NAME", "SERVICE", "HEALTH", "LAST CHECK"], rows)
+
+
 def handle_logs(args: argparse.Namespace) -> None:
     project_name = resolve_project_name(args.project_name)
     service_names, journal_args = split_log_args(args.log_args)
@@ -382,7 +435,9 @@ def handle_logs(args: argparse.Namespace) -> None:
         config = parse_compose_file(resolve_compose_file(args.file))
         service_names = list(config.services)
 
-    command = ["journalctl", "--user", "-f"]
+    command = ["journalctl", "--user"]
+    if args.follow:
+        command.append("-f")
     for service_name in service_names:
         command.extend(["-u", f"{unit_name(project_name, service_name)}.service"])
     command.extend(journal_args)
@@ -409,6 +464,37 @@ def collect_stats_snapshot(project_name: str, service_name: str) -> dict[str, st
     properties["Service"] = service_name
     apply_cgroup_stats_fallbacks(properties)
     return properties
+
+
+def build_health_row(project_name: str, service_name: str, service: Service) -> list[str]:
+    unit = unit_name(project_name, service_name)
+    if service.healthcheck is None:
+        return [unit, service_name, "none", "-"]
+    if service.healthcheck.disabled:
+        return [unit, service_name, "disabled", "-"]
+
+    main_properties = unit_properties(unit, ["LoadState", "ActiveState"])
+    if main_properties.get("LoadState") != "loaded":
+        return [unit, service_name, "not created", "-"]
+    if main_properties.get("ActiveState") not in RUNNING_SERVICE_STATES:
+        return [unit, service_name, main_properties.get("ActiveState", "inactive") or "inactive", "-"]
+
+    health_unit = health_unit_name(project_name, service_name)
+    properties = unit_file_properties(f"{health_unit}.service", HEALTH_PROPERTIES)
+    health = format_health_status(properties)
+    return [unit, service_name, health, format_systemd_timestamp(properties.get("InactiveExitTimestamp", ""))]
+
+
+def format_health_status(properties: dict[str, str]) -> str:
+    result = properties.get("Result", "")
+    exit_status = properties.get("ExecMainStatus", "")
+    if result == "success" or exit_status == "0":
+        return "healthy"
+    if result and result not in MISSING_SYSTEMD_VALUES:
+        return "unhealthy"
+    if properties.get("LoadState") != "loaded":
+        return "starting"
+    return "starting"
 
 
 def apply_cgroup_stats_fallbacks(properties: dict[str, str]) -> None:
@@ -786,15 +872,19 @@ def unit_property(unit: str, property_name: str) -> str:
 
 
 def unit_properties(unit: str, property_names: list[str]) -> dict[str, str]:
+    return unit_file_properties(f"{unit}.service", property_names)
+
+
+def unit_file_properties(unit_file: str, property_names: list[str]) -> dict[str, str]:
     command = ["systemctl", "--user", "show"]
     command.extend(f"--property={property_name}" for property_name in property_names)
-    command.append(f"{unit}.service")
+    command.append(unit_file)
     result = run_command_capture(command)
     if result.returncode != 0:
         if is_unit_not_loaded(result):
             return {property_name: "not-found" for property_name in property_names}
         emit_completed_process_output(result)
-        raise SystemdComposeError(f"could not inspect unit {unit}.service")
+        raise SystemdComposeError(f"could not inspect unit {unit_file}")
 
     values = {property_name: "" for property_name in property_names}
     for line in result.stdout.splitlines():
@@ -841,8 +931,39 @@ def cleanup_unit(unit: str, *, reset_failed: bool) -> int:
     return exit_code
 
 
+def start_health_unit(project_name: str, service_name: str, service: Service) -> int:
+    if service.healthcheck is None or service.healthcheck.disabled:
+        return 0
+    return run_command(["systemctl", "--user", "start", f"{health_unit_name(project_name, service_name)}.timer"], check=False)
+
+
+def stop_health_units(project_name: str, service_name: str, service: Service) -> int:
+    if service.healthcheck is None or service.healthcheck.disabled:
+        return 0
+    return stop_unit_file(f"{health_unit_name(project_name, service_name)}.timer")
+
+
+def cleanup_health_units(project_name: str, service_name: str, service: Service | None = None) -> int:
+    if service is not None and (service.healthcheck is None or service.healthcheck.disabled):
+        return 0
+    exit_code = 0
+    health_unit = health_unit_name(project_name, service_name)
+    for unit_file in [f"{health_unit}.timer", f"{health_unit}.service"]:
+        stop_exit_code = stop_unit_file(unit_file)
+        if stop_exit_code != 0 and exit_code == 0:
+            exit_code = stop_exit_code
+        reset_exit_code = reset_failed_unit_file(unit_file)
+        if reset_exit_code != 0 and exit_code == 0:
+            exit_code = reset_exit_code
+    return exit_code
+
+
 def stop_unit(unit: str) -> int:
-    result = run_command_capture(["systemctl", "--user", "stop", f"{unit}.service"])
+    return stop_unit_file(f"{unit}.service")
+
+
+def stop_unit_file(unit_file: str) -> int:
+    result = run_command_capture(["systemctl", "--user", "stop", unit_file])
     if is_unit_not_loaded(result):
         return 0
     emit_completed_process_output(result)
@@ -850,7 +971,11 @@ def stop_unit(unit: str) -> int:
 
 
 def reset_failed_unit(unit: str) -> int:
-    result = run_command_capture(["systemctl", "--user", "reset-failed", f"{unit}.service"])
+    return reset_failed_unit_file(f"{unit}.service")
+
+
+def reset_failed_unit_file(unit_file: str) -> int:
+    result = run_command_capture(["systemctl", "--user", "reset-failed", unit_file])
     if is_unit_not_loaded(result):
         return 0
     emit_completed_process_output(result)
@@ -883,6 +1008,7 @@ def find_orphan_units(project_name: str, current_services: set[str]) -> list[str
         raise SystemdComposeError("could not list user service units")
 
     current_units = {unit_name(project_name, service_name) for service_name in current_services}
+    current_units.update(health_unit_name(project_name, service_name) for service_name in current_services)
     orphans: list[str] = []
     for line in result.stdout.splitlines():
         columns = line.split(maxsplit=1)
@@ -905,9 +1031,24 @@ def cleanup_orphan_units(orphans: list[str]) -> int:
     exit_code = 0
     for orphan in sorted(orphans, reverse=True):
         print(f"Removing orphan unit: {orphan}.service")
-        orphan_exit_code = cleanup_unit(orphan, reset_failed=True)
+        if orphan.endswith("-health"):
+            orphan_exit_code = cleanup_health_orphan_unit(orphan)
+        else:
+            orphan_exit_code = cleanup_unit(orphan, reset_failed=True)
         if orphan_exit_code != 0 and exit_code == 0:
             exit_code = orphan_exit_code
+    return exit_code
+
+
+def cleanup_health_orphan_unit(health_unit: str) -> int:
+    exit_code = 0
+    for unit_file in [f"{health_unit}.timer", f"{health_unit}.service"]:
+        stop_exit_code = stop_unit_file(unit_file)
+        if stop_exit_code != 0 and exit_code == 0:
+            exit_code = stop_exit_code
+        reset_exit_code = reset_failed_unit_file(unit_file)
+        if reset_exit_code != 0 and exit_code == 0:
+            exit_code = reset_exit_code
     return exit_code
 
 

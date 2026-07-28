@@ -9,6 +9,7 @@ does not generate unit files, wrapper scripts, PID files, or temporary runtime s
 ```bash
 uv run systemd-compose up --dry-run
 uv run systemd-compose up
+uv run systemd-compose up web db
 uv run systemd-compose up --remove-orphans
 uv run systemd-compose stop
 uv run systemd-compose start
@@ -19,17 +20,24 @@ uv run systemd-compose ps
 uv run systemd-compose stats
 uv run systemd-compose stats --interval 2
 uv run systemd-compose stats --no-stream
+uv run systemd-compose health
+uv run systemd-compose health web
 uv run systemd-compose logs
+uv run systemd-compose logs --follow
 uv run systemd-compose logs web db
 uv run systemd-compose logs web -- --since today --no-pager
 uv run systemd-compose down
+uv run systemd-compose down web db
 uv run systemd-compose down --remove-orphans
 ```
 
 `up` creates missing units, recreates changed units, starts stopped unchanged units,
-and skips unchanged running units. `start` and `restart` only operate on units that
-were already created by `up`. `stop` stops units without resetting failed state;
-`down` stops and resets failed transient units.
+and skips unchanged running units. When service names are provided, `up` only
+operates on those services. `start` and `restart` only operate on units that were
+already created by `up`. `stop` stops units without resetting failed state;
+`down` stops and resets failed transient units, optionally limited to named
+services. `logs` prints existing journal output by default; use `logs --follow`
+to stream new entries.
 
 If services are removed from the compose file, their old transient units are treated
 as orphans. `up` warns about project-owned orphans, and `up --remove-orphans` or
@@ -60,6 +68,14 @@ systemd `MemoryMax=`, `cpus` maps to `CPUQuota=`, and `pids_limit` maps to
 `TasksMax=`. For `cpus`, `1.0` means one full CPU, `0.5` means half of one CPU,
 and values above `1.0` can use more than one CPU on multicore systems.
 
+Services can also define Docker Compose-like healthchecks. Healthchecks are run
+as companion transient systemd timer/service units named
+`<project>-<service>-health.timer` and `<project>-<service>-health.service`.
+`health` reports `healthy` after the latest successful probe, `unhealthy` after
+the latest failed probe, and `starting` before a probe result exists. `retries`
+is parsed and included in change detection, but this daemonless version does not
+yet track consecutive failures like Docker.
+
 Example `systemd-compose.yaml`:
 
 ```yaml
@@ -76,6 +92,12 @@ services:
     mem_limit: 512m
     cpus: 0.5
     pids_limit: 128
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: on-failure
     depends_on:
       - db

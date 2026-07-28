@@ -6,7 +6,7 @@ import re
 import shlex
 
 from systemd_compose.errors import SystemdComposeError
-from systemd_compose.models import Resources, Service
+from systemd_compose.models import Healthcheck, Resources, Service
 
 BWRAP_PATH = "/usr/bin/bwrap"
 DESCRIPTION_HASH_PREFIX = "systemd-compose-hash="
@@ -107,10 +107,67 @@ def build_systemd_run_command(project_name: str, service_name: str, service: Ser
     return command
 
 
+def build_health_systemd_run_command(project_name: str, service_name: str, service: Service) -> list[str] | None:
+    if service.healthcheck is None or service.healthcheck.disabled:
+        return None
+
+    unit = unit_name(project_name, service_name)
+    health_unit = health_unit_name(project_name, service_name)
+    command = [
+        "systemd-run",
+        "--user",
+        f"--unit={health_unit}",
+        f"--description={build_health_description(project_name, service_name, service)}",
+        f"--on-active={service.healthcheck.start_period}",
+        f"--on-unit-active={service.healthcheck.interval}",
+        "--timer-property",
+        f"Requires={unit}.service",
+        "--timer-property",
+        f"After={unit}.service",
+        "--timer-property",
+        f"BindsTo={unit}.service",
+        "-p",
+        "Type=oneshot",
+        "-p",
+        f"SyslogIdentifier={health_unit}",
+        "-p",
+        f"Requires={unit}.service",
+        "-p",
+        f"After={unit}.service",
+        "-p",
+        f"BindsTo={unit}.service",
+        "-p",
+        f"TimeoutStartSec={service.healthcheck.timeout}",
+    ]
+    command.extend(build_health_service_payload(service))
+    return command
+
+
+def build_health_service_payload(service: Service) -> list[str]:
+    if service.healthcheck is None or service.healthcheck.disabled:
+        raise SystemdComposeError(f"service {service.name!r} does not have an enabled healthcheck")
+    health_service = Service(
+        name=service.name,
+        command=_healthcheck_argv(service.healthcheck),
+        environment=service.environment,
+        volumes=service.volumes,
+        tmpfs=service.tmpfs,
+        working_dir=service.working_dir,
+    )
+    return build_service_payload(health_service)
+
+
 def build_description(project_name: str, service_name: str, service: Service) -> str:
     return (
         f"systemd-compose: {project_name} {service_name} "
         f"{DESCRIPTION_HASH_PREFIX}{service_definition_hash(project_name, service_name, service)}"
+    )
+
+
+def build_health_description(project_name: str, service_name: str, service: Service) -> str:
+    return (
+        f"systemd-compose healthcheck: {project_name} {service_name} "
+        f"{DESCRIPTION_HASH_PREFIX}{health_definition_hash(project_name, service_name, service)}"
     )
 
 
@@ -122,6 +179,7 @@ def service_definition_hash(project_name: str, service_name: str, service: Servi
         "dependencies": [f"{unit_name(project_name, dependency)}.service" for dependency in service.depends_on],
         "restart": service.restart,
         "resources": build_resource_properties(service.resources),
+        "healthcheck": health_definition_hash(project_name, service_name, service) if service.healthcheck else None,
         "payload": build_service_payload(service),
     }
     encoded = json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -142,6 +200,10 @@ def unit_name(project_name: str, service_name: str) -> str:
 
 def unit_prefix(project_name: str) -> str:
     return f"{_clean_unit_component(project_name)}-"
+
+
+def health_unit_name(project_name: str, service_name: str) -> str:
+    return f"{unit_name(project_name, service_name)}-health"
 
 
 def _clean_unit_component(value: str) -> str:
@@ -186,3 +248,37 @@ def _cpu_quota(cpus: str) -> str:
     if cpus.endswith("%"):
         return cpus
     return f"{float(cpus) * 100:g}%"
+
+
+def health_definition_data(project_name: str, service_name: str, service: Service) -> dict[str, object] | None:
+    if service.healthcheck is None or service.healthcheck.disabled:
+        return None
+    return {
+        "unit": health_unit_name(project_name, service_name),
+        "main_unit": unit_name(project_name, service_name),
+        "test": service.healthcheck.test,
+        "interval": service.healthcheck.interval,
+        "timeout": service.healthcheck.timeout,
+        "start_period": service.healthcheck.start_period,
+        "retries": service.healthcheck.retries,
+        "payload": build_health_service_payload(service),
+    }
+
+
+def health_definition_hash(project_name: str, service_name: str, service: Service) -> str | None:
+    data = health_definition_data(project_name, service_name, service)
+    if data is None:
+        return None
+    encoded = json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def _healthcheck_argv(healthcheck: Healthcheck) -> list[str]:
+    if isinstance(healthcheck.test, str):
+        return ["/bin/sh", "-c", healthcheck.test]
+    mode = healthcheck.test[0]
+    if mode == "CMD":
+        return list(healthcheck.test[1:])
+    if mode == "CMD-SHELL":
+        return ["/bin/sh", "-c", " ".join(healthcheck.test[1:])]
+    raise SystemdComposeError("disabled healthchecks cannot be executed")

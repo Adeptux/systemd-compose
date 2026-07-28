@@ -18,6 +18,16 @@ class Resources:
 
 
 @dataclass(frozen=True)
+class Healthcheck:
+    test: str | list[str]
+    interval: str = "30s"
+    timeout: str = "30s"
+    start_period: str = "0s"
+    retries: int = 3
+    disabled: bool = False
+
+
+@dataclass(frozen=True)
 class Service:
     name: str
     command: str | list[str]
@@ -28,6 +38,7 @@ class Service:
     working_dir: str | None = None
     restart: str | None = None
     resources: Resources | None = None
+    healthcheck: Healthcheck | None = None
 
 
 @dataclass(frozen=True)

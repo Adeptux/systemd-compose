@@ -60,6 +60,71 @@ def test_parse_compose_data_supports_docker_like_resources():
     assert resources.pids_limit == 128
 
 
+def test_parse_compose_data_supports_docker_like_healthcheck():
+    config = parse_compose_data(
+        {
+            "services": {
+                "web": {
+                    "command": "python -m http.server 8000",
+                    "healthcheck": {
+                        "test": ["CMD", "curl", "-f", "http://127.0.0.1:8000"],
+                        "interval": "10s",
+                        "timeout": "2s",
+                        "start_period": "5s",
+                        "retries": 2,
+                    },
+                },
+            }
+        }
+    )
+
+    healthcheck = config.services["web"].healthcheck
+
+    assert healthcheck is not None
+    assert healthcheck.test == ["CMD", "curl", "-f", "http://127.0.0.1:8000"]
+    assert healthcheck.interval == "10s"
+    assert healthcheck.timeout == "2s"
+    assert healthcheck.start_period == "5s"
+    assert healthcheck.retries == 2
+    assert healthcheck.disabled is False
+
+
+def test_parse_compose_data_supports_disabled_healthcheck():
+    config = parse_compose_data(
+        {
+            "services": {
+                "web": {
+                    "command": "python -m http.server 8000",
+                    "healthcheck": {"disable": True},
+                },
+            }
+        }
+    )
+
+    healthcheck = config.services["web"].healthcheck
+
+    assert healthcheck is not None
+    assert healthcheck.disabled is True
+
+
+def test_parse_compose_data_supports_none_healthcheck_test():
+    config = parse_compose_data(
+        {
+            "services": {
+                "web": {
+                    "command": "python -m http.server 8000",
+                    "healthcheck": {"test": ["NONE"]},
+                },
+            }
+        }
+    )
+
+    healthcheck = config.services["web"].healthcheck
+
+    assert healthcheck is not None
+    assert healthcheck.disabled is True
+
+
 @pytest.mark.parametrize(
     ("service_values", "message"),
     [
@@ -83,6 +148,33 @@ def test_parse_compose_data_rejects_invalid_resources(service_values, message):
             {
                 "services": {
                     "web": service,
+                }
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("healthcheck", "message"),
+    [
+        ("curl -f http://127.0.0.1:8000", "healthcheck must be a mapping"),
+        ({}, "healthcheck.test is required"),
+        ({"test": ["SHELL", "curl -f http://127.0.0.1:8000"]}, "must start with CMD"),
+        ({"test": ["CMD"]}, "CMD requires a command"),
+        ({"test": ["NONE", "curl"]}, "NONE must not include a command"),
+        ({"test": "true", "interval": "-1s"}, "healthcheck.interval must be a non-negative duration"),
+        ({"test": "true", "retries": 0}, "healthcheck.retries must be a positive integer"),
+        ({"test": "true", "disable": "yes"}, "healthcheck.disable must be a boolean"),
+    ],
+)
+def test_parse_compose_data_rejects_invalid_healthcheck(healthcheck, message):
+    with pytest.raises(SystemdComposeError, match=message):
+        parse_compose_data(
+            {
+                "services": {
+                    "web": {
+                        "command": "python -m http.server 8000",
+                        "healthcheck": healthcheck,
+                    },
                 }
             }
         )

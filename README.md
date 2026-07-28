@@ -24,6 +24,8 @@ uv run systemd-compose health
 uv run systemd-compose health web
 uv run systemd-compose logs
 uv run systemd-compose logs --follow
+uv run systemd-compose logs --health
+uv run systemd-compose logs --health static -- --since today
 uv run systemd-compose logs web db
 uv run systemd-compose logs web -- --since today --no-pager
 uv run systemd-compose down
@@ -37,7 +39,7 @@ operates on those services. `start` and `restart` only operate on units that wer
 already created by `up`. `stop` stops units without resetting failed state;
 `down` stops and resets failed transient units, optionally limited to named
 services. `logs` prints existing journal output by default; use `logs --follow`
-to stream new entries.
+to stream new entries. Use `logs --health` to inspect healthcheck sidecar logs.
 
 If services are removed from the compose file, their old transient units are treated
 as orphans. `up` warns about project-owned orphans, and `up --remove-orphans` or
@@ -68,13 +70,21 @@ systemd `MemoryMax=`, `cpus` maps to `CPUQuota=`, and `pids_limit` maps to
 `TasksMax=`. For `cpus`, `1.0` means one full CPU, `0.5` means half of one CPU,
 and values above `1.0` can use more than one CPU on multicore systems.
 
+NVIDIA GPU workloads do not need special syntax in the current host-binary
+sandbox model. The base `bwrap` profile exposes host `/dev`, `/usr`, `/etc`,
+`/proc`, and `/sys`, so host NVIDIA device nodes and libraries are available
+when the host system exposes them. On WSL, `nvidia-smi` is commonly available as
+`/usr/lib/wsl/lib/nvidia-smi` rather than `nvidia-smi` on the default service
+`PATH`.
+
 Services can also define Docker Compose-like healthchecks. Healthchecks are run
 as companion transient systemd timer/service units named
 `<project>-<service>-health.timer` and `<project>-<service>-health.service`.
-`health` reports `healthy` after the latest successful probe, `unhealthy` after
-the latest failed probe, and `starting` before a probe result exists. `retries`
-is parsed and included in change detection, but this daemonless version does not
-yet track consecutive failures like Docker.
+`ps` includes the latest health state inline. `health` reports `healthy` after
+the latest successful probe, `unhealthy` after the latest failed probe, and
+`starting` before a probe result exists. `retries` is parsed and included in
+change detection, but this daemonless version does not yet track consecutive
+failures like Docker.
 
 Example `systemd-compose.yaml`:
 

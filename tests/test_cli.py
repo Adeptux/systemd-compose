@@ -440,8 +440,10 @@ def test_ps_prints_service_snapshot(tmp_path: Path, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "NAME" in output
     assert "SERVICE" in output
+    assert "HEALTH" in output
     assert "demo-web" in output
     assert "Up (running)" in output
+    assert "none" in output
     assert "123" in output
     assert "demo-db" in output
     assert "not created" in output
@@ -469,6 +471,73 @@ def test_ps_prints_service_snapshot(tmp_path: Path, monkeypatch, capsys):
             "--property=MainPID",
             "--property=ExecMainStartTimestamp",
             "demo-db.service",
+        ],
+    ]
+
+
+def test_ps_prints_health_status_for_healthchecked_service(tmp_path: Path, monkeypatch, capsys):
+    compose_file = write_health_compose_file(tmp_path)
+    captured_calls: list[list[str]] = []
+
+    def fake_run_command_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
+        captured_calls.append(command)
+        if command[-1] == "demo-web.service":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "\n".join(
+                    [
+                        "Id=demo-web.service",
+                        "LoadState=loaded",
+                        "ActiveState=active",
+                        "SubState=running",
+                        "MainPID=123",
+                        "ExecMainStartTimestamp=Mon 2026-07-13 21:18:43 EDT",
+                    ]
+                )
+                + "\n",
+                "",
+            )
+        if command[-1] == "demo-web-health.service":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "LoadState=not-found\nResult=success\nExecMainStatus=0\nInactiveExitTimestamp=\n",
+                "",
+            )
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
+
+    exit_code = main(["-f", str(compose_file), "-p", "demo", "ps"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "HEALTH" in output
+    assert "healthy" in output
+    assert captured_calls == [
+        [
+            "systemctl",
+            "--user",
+            "show",
+            "--property=Id",
+            "--property=LoadState",
+            "--property=ActiveState",
+            "--property=SubState",
+            "--property=MainPID",
+            "--property=ExecMainStartTimestamp",
+            "demo-web.service",
+        ],
+        [
+            "systemctl",
+            "--user",
+            "show",
+            "--property=LoadState",
+            "--property=ActiveState",
+            "--property=Result",
+            "--property=ExecMainStatus",
+            "--property=InactiveExitTimestamp",
+            "demo-web-health.service",
         ],
     ]
 
@@ -1168,6 +1237,71 @@ def test_logs_passes_journalctl_args_after_separator(monkeypatch):
                 "--since",
                 "today",
                 "--no-pager",
+            ],
+            True,
+        ),
+    ]
+
+
+def test_logs_health_uses_healthcheck_sidecar_units(monkeypatch):
+    calls: list[tuple[list[str], bool]] = []
+
+    def fake_run_command(command: list[str], *, check: bool = True) -> int:
+        calls.append((command, check))
+        return 0
+
+    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+
+    exit_code = main(["-p", "demo", "logs", "--health", "web", "--", "--since", "today"])
+
+    assert exit_code == 0
+    assert calls == [
+        (
+            [
+                "journalctl",
+                "--user",
+                "-u",
+                "demo-web-health.service",
+                "--since",
+                "today",
+            ],
+            True,
+        ),
+    ]
+
+
+def test_logs_health_defaults_to_healthchecked_services(tmp_path: Path, monkeypatch):
+    compose_file = tmp_path / "systemd-compose.yaml"
+    compose_file.write_text(
+        """
+services:
+  web:
+    command: "python -m http.server 8000"
+    healthcheck:
+      test: "true"
+  db:
+    command: "postgres -D /tmp/postgres-data"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    calls: list[tuple[list[str], bool]] = []
+
+    def fake_run_command(command: list[str], *, check: bool = True) -> int:
+        calls.append((command, check))
+        return 0
+
+    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+
+    exit_code = main(["-f", str(compose_file), "-p", "demo", "logs", "--health"])
+
+    assert exit_code == 0
+    assert calls == [
+        (
+            [
+                "journalctl",
+                "--user",
+                "-u",
+                "demo-web-health.service",
             ],
             True,
         ),

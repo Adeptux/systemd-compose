@@ -182,6 +182,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="follow journal logs",
     )
     logs_parser.add_argument(
+        "--health",
+        action="store_true",
+        help="show healthcheck sidecar logs instead of service logs",
+    )
+    logs_parser.add_argument(
         "log_args",
         nargs=argparse.REMAINDER,
         help="optional service names, then '--' followed by journalctl arguments",
@@ -371,7 +376,7 @@ def handle_ps(args: argparse.Namespace) -> None:
         build_ps_row(project_name, service_name, config.services[service_name])
         for service_name in service_names
     ]
-    print_table(["NAME", "SERVICE", "STATUS", "PID", "STARTED", "COMMAND"], rows)
+    print_table(["NAME", "SERVICE", "STATUS", "HEALTH", "PID", "STARTED", "COMMAND"], rows)
 
 
 def handle_stats(args: argparse.Namespace) -> None:
@@ -433,13 +438,23 @@ def handle_logs(args: argparse.Namespace) -> None:
     service_names, journal_args = split_log_args(args.log_args)
     if not service_names:
         config = parse_compose_file(resolve_compose_file(args.file))
-        service_names = list(config.services)
+        if args.health:
+            service_names = [
+                service_name
+                for service_name, service in config.services.items()
+                if service.healthcheck is not None and not service.healthcheck.disabled
+            ]
+        else:
+            service_names = list(config.services)
 
     command = ["journalctl", "--user"]
     if args.follow:
         command.append("-f")
     for service_name in service_names:
-        command.extend(["-u", f"{unit_name(project_name, service_name)}.service"])
+        if args.health:
+            command.extend(["-u", f"{health_unit_name(project_name, service_name)}.service"])
+        else:
+            command.extend(["-u", f"{unit_name(project_name, service_name)}.service"])
     command.extend(journal_args)
     run_command(command)
 
@@ -451,6 +466,7 @@ def build_ps_row(project_name: str, service_name: str, service: Service) -> list
         unit,
         service_name,
         format_ps_status(properties),
+        build_health_cell(project_name, service_name, service, properties),
         format_pid(properties.get("MainPID", "")),
         format_systemd_timestamp(properties.get("ExecMainStartTimestamp", "")),
         format_command(service),
@@ -468,21 +484,43 @@ def collect_stats_snapshot(project_name: str, service_name: str) -> dict[str, st
 
 def build_health_row(project_name: str, service_name: str, service: Service) -> list[str]:
     unit = unit_name(project_name, service_name)
-    if service.healthcheck is None:
-        return [unit, service_name, "none", "-"]
-    if service.healthcheck.disabled:
-        return [unit, service_name, "disabled", "-"]
+    health, last_check = collect_health_status(project_name, service_name, service)
+    return [unit, service_name, health, last_check]
 
-    main_properties = unit_properties(unit, ["LoadState", "ActiveState"])
+
+def build_health_cell(
+    project_name: str,
+    service_name: str,
+    service: Service,
+    main_properties: dict[str, str],
+) -> str:
+    health, _last_check = collect_health_status(project_name, service_name, service, main_properties)
+    return health
+
+
+def collect_health_status(
+    project_name: str,
+    service_name: str,
+    service: Service,
+    main_properties: dict[str, str] | None = None,
+) -> tuple[str, str]:
+    unit = unit_name(project_name, service_name)
+    if service.healthcheck is None:
+        return ("none", "-")
+    if service.healthcheck.disabled:
+        return ("disabled", "-")
+
+    if main_properties is None:
+        main_properties = unit_properties(unit, ["LoadState", "ActiveState"])
     if main_properties.get("LoadState") != "loaded":
-        return [unit, service_name, "not created", "-"]
+        return ("not created", "-")
     if main_properties.get("ActiveState") not in RUNNING_SERVICE_STATES:
-        return [unit, service_name, main_properties.get("ActiveState", "inactive") or "inactive", "-"]
+        return (main_properties.get("ActiveState", "inactive") or "inactive", "-")
 
     health_unit = health_unit_name(project_name, service_name)
     properties = unit_file_properties(f"{health_unit}.service", HEALTH_PROPERTIES)
     health = format_health_status(properties)
-    return [unit, service_name, health, format_systemd_timestamp(properties.get("InactiveExitTimestamp", ""))]
+    return (health, format_systemd_timestamp(properties.get("InactiveExitTimestamp", "")))
 
 
 def format_health_status(properties: dict[str, str]) -> str:

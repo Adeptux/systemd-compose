@@ -2,9 +2,17 @@ from pathlib import Path
 import subprocess
 
 import systemd_compose.cli
+import systemd_compose.stats
+import systemd_compose.status
+import systemd_compose.systemd_units
 from systemd_compose.builders import service_definition_hash
 from systemd_compose.cli import main
 from systemd_compose.parser import parse_compose_file
+
+
+def patch_run_command(monkeypatch, fake_run_command):
+    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command", fake_run_command)
 
 
 def write_compose_file(tmp_path: Path) -> Path:
@@ -87,8 +95,8 @@ def test_up_starts_units_that_are_not_loaded(tmp_path: Path, monkeypatch):
         run_calls.append(command)
         return 0
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
-    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
+    patch_run_command(monkeypatch, fake_run_command)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "up"])
 
@@ -119,8 +127,8 @@ def test_up_accepts_selected_services(tmp_path: Path, monkeypatch):
         run_calls.append(command)
         return 0
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
-    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
+    patch_run_command(monkeypatch, fake_run_command)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "up", "web"])
 
@@ -147,8 +155,8 @@ def test_up_starts_healthcheck_timer_for_new_unit(tmp_path: Path, monkeypatch):
         run_calls.append(command)
         return 0
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
-    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
+    patch_run_command(monkeypatch, fake_run_command)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "up"])
 
@@ -171,8 +179,8 @@ def test_up_creates_missing_host_volume_directories(tmp_path: Path, monkeypatch)
     def fake_run_command(command: list[str], *, check: bool = True) -> int:
         return 0
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
-    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
+    patch_run_command(monkeypatch, fake_run_command)
 
     assert not site_dir.exists()
 
@@ -225,8 +233,8 @@ def test_up_skips_loaded_units(tmp_path: Path, monkeypatch, capsys):
         run_calls.append(command)
         return 0
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
-    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
+    patch_run_command(monkeypatch, fake_run_command)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "up"])
 
@@ -278,8 +286,8 @@ services:
         run_calls.append(command)
         return 0
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
-    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
+    patch_run_command(monkeypatch, fake_run_command)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "up"])
 
@@ -342,8 +350,8 @@ services:
         run_calls.append(command)
         return 0
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
-    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
+    patch_run_command(monkeypatch, fake_run_command)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "up"])
 
@@ -374,7 +382,7 @@ def test_status_uses_user_systemctl_for_all_services(tmp_path: Path, monkeypatch
         calls.append((command, check))
         return 3
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    patch_run_command(monkeypatch, fake_run_command)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "status"])
 
@@ -394,7 +402,7 @@ def test_status_uses_user_systemctl_for_one_service(monkeypatch):
         calls.append((command, check))
         return 0
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    patch_run_command(monkeypatch, fake_run_command)
 
     exit_code = main(["-p", "demo", "status", "web"])
 
@@ -432,7 +440,7 @@ def test_ps_prints_service_snapshot(tmp_path: Path, monkeypatch, capsys):
             )
         return subprocess.CompletedProcess(command, 5, "", "Unit demo-db.service not loaded.\n")
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "ps"])
 
@@ -507,7 +515,7 @@ def test_ps_prints_health_status_for_healthchecked_service(tmp_path: Path, monke
             )
         raise AssertionError(f"unexpected command: {command}")
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "ps"])
 
@@ -569,7 +577,7 @@ def test_stats_no_stream_prints_service_snapshot(tmp_path: Path, monkeypatch, ca
             )
         return subprocess.CompletedProcess(command, 5, "", "Unit demo-db.service not loaded.\n")
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
     monkeypatch.setattr(systemd_compose.cli.time, "sleep", lambda _interval: None)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "stats", "--no-stream"])
@@ -617,7 +625,7 @@ def test_health_prints_service_health_status(tmp_path: Path, monkeypatch, capsys
             )
         raise AssertionError(f"unexpected command: {command}")
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "health"])
 
@@ -658,7 +666,7 @@ def test_health_prints_none_for_service_without_healthcheck(tmp_path: Path, monk
         captured_calls.append(command)
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "health", "web"])
 
@@ -669,7 +677,7 @@ def test_health_prints_none_for_service_without_healthcheck(tmp_path: Path, monk
 
 
 def test_format_health_status_uses_result_from_unloaded_transient_service():
-    assert systemd_compose.cli.format_health_status(
+    assert systemd_compose.status.format_health_status(
         {
             "LoadState": "not-found",
             "Result": "success",
@@ -700,9 +708,9 @@ def test_stats_falls_back_to_cgroup_files(tmp_path: Path, monkeypatch):
         "IOWriteBytes": "[not set]",
     }
 
-    monkeypatch.setattr(systemd_compose.cli, "CGROUP_ROOT", tmp_path)
+    monkeypatch.setattr(systemd_compose.stats, "CGROUP_ROOT", tmp_path)
 
-    systemd_compose.cli.apply_cgroup_stats_fallbacks(properties)
+    systemd_compose.stats.apply_cgroup_stats_fallbacks(properties)
 
     assert properties["CPUUsageNSec"] == "3000000000"
     assert properties["MemoryCurrent"] == "1048576"
@@ -738,10 +746,10 @@ def test_stats_falls_back_to_proc_files(tmp_path: Path, monkeypatch):
         "IOWriteBytes": "[not set]",
     }
 
-    monkeypatch.setattr(systemd_compose.cli, "CGROUP_ROOT", cgroup_root)
-    monkeypatch.setattr(systemd_compose.cli, "PROC_ROOT", proc_root)
+    monkeypatch.setattr(systemd_compose.stats, "CGROUP_ROOT", cgroup_root)
+    monkeypatch.setattr(systemd_compose.stats, "PROC_ROOT", proc_root)
 
-    systemd_compose.cli.apply_cgroup_stats_fallbacks(properties)
+    systemd_compose.stats.apply_cgroup_stats_fallbacks(properties)
 
     assert properties["MemoryCurrent"] == str(300 * 1024)
     assert properties["TasksCurrent"] == "2"
@@ -765,7 +773,7 @@ def test_render_stats_table_calculates_cpu_percent():
         }
     ]
 
-    output = systemd_compose.cli.render_stats_table(current, previous, 11.0, 10.0, 2)
+    output = systemd_compose.stats.render_stats_table(current, previous, 11.0, 10.0, 2)
 
     assert "100.00%" in output
 
@@ -791,8 +799,8 @@ def test_start_starts_existing_non_running_unit(tmp_path: Path, monkeypatch):
         run_calls.append((command, check))
         return 0
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
-    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
+    patch_run_command(monkeypatch, fake_run_command)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "start", "web"])
 
@@ -826,8 +834,8 @@ def test_start_failed_unit_does_not_reset_failed_before_starting(tmp_path: Path,
         run_calls.append((command, check))
         return 1
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
-    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
+    patch_run_command(monkeypatch, fake_run_command)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "start", "web"])
 
@@ -855,8 +863,8 @@ def test_start_refuses_missing_unit(tmp_path: Path, monkeypatch, capsys):
         run_calls.append(command)
         return 0
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
-    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
+    patch_run_command(monkeypatch, fake_run_command)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "start", "web"])
 
@@ -878,7 +886,7 @@ def test_stop_only_stops_units_without_resetting(tmp_path: Path, monkeypatch):
         captured_calls.append(command)
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "stop"])
 
@@ -910,8 +918,8 @@ def test_restart_restarts_existing_unit(tmp_path: Path, monkeypatch):
         run_calls.append((command, check))
         return 0
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
-    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
+    patch_run_command(monkeypatch, fake_run_command)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "restart", "web"])
 
@@ -934,7 +942,7 @@ def test_down_ignores_not_loaded_units_and_continues(tmp_path: Path, monkeypatch
         calls.append(command)
         return subprocess.CompletedProcess(command, 5, "", "not loaded")
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "down"])
 
@@ -956,7 +964,7 @@ def test_down_accepts_selected_services(tmp_path: Path, monkeypatch):
         calls.append(command)
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "down", "web"])
 
@@ -975,7 +983,7 @@ def test_down_cleans_healthcheck_timer_and_service(tmp_path: Path, monkeypatch):
         calls.append(command)
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "down"])
 
@@ -1000,7 +1008,7 @@ def test_down_returns_first_real_stop_failure(tmp_path: Path, monkeypatch, capsy
             return subprocess.CompletedProcess(command, 1, "", "boom\n")
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "down"])
 
@@ -1044,8 +1052,8 @@ def test_up_warns_about_orphan_units(tmp_path: Path, monkeypatch, capsys):
         run_calls.append(command)
         return 0
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
-    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
+    patch_run_command(monkeypatch, fake_run_command)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "up"])
 
@@ -1080,7 +1088,7 @@ def test_down_remove_orphans_cleans_project_orphan_units(tmp_path: Path, monkeyp
             )
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "down", "--remove-orphans"])
 
@@ -1119,7 +1127,7 @@ def test_down_remove_orphans_cleans_healthcheck_orphan_timer_and_service(tmp_pat
             )
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command_capture", fake_run_command_capture)
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "down", "--remove-orphans"])
 
@@ -1168,7 +1176,7 @@ def test_logs_defaults_to_all_services(tmp_path: Path, monkeypatch):
         calls.append((command, check))
         return 0
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    patch_run_command(monkeypatch, fake_run_command)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "logs"])
 
@@ -1195,7 +1203,7 @@ def test_logs_accepts_multiple_services(monkeypatch):
         calls.append((command, check))
         return 0
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    patch_run_command(monkeypatch, fake_run_command)
 
     exit_code = main(["-p", "demo", "logs", "web", "db"])
 
@@ -1222,7 +1230,7 @@ def test_logs_passes_journalctl_args_after_separator(monkeypatch):
         calls.append((command, check))
         return 0
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    patch_run_command(monkeypatch, fake_run_command)
 
     exit_code = main(["-p", "demo", "logs", "web", "--", "--since", "today", "--no-pager"])
 
@@ -1250,7 +1258,7 @@ def test_logs_health_uses_healthcheck_sidecar_units(monkeypatch):
         calls.append((command, check))
         return 0
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    patch_run_command(monkeypatch, fake_run_command)
 
     exit_code = main(["-p", "demo", "logs", "--health", "web", "--", "--since", "today"])
 
@@ -1290,7 +1298,7 @@ services:
         calls.append((command, check))
         return 0
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    patch_run_command(monkeypatch, fake_run_command)
 
     exit_code = main(["-f", str(compose_file), "-p", "demo", "logs", "--health"])
 
@@ -1315,7 +1323,7 @@ def test_logs_follow_is_opt_in(monkeypatch):
         calls.append((command, check))
         return 0
 
-    monkeypatch.setattr(systemd_compose.cli, "run_command", fake_run_command)
+    patch_run_command(monkeypatch, fake_run_command)
 
     exit_code = main(["-p", "demo", "logs", "--follow", "web"])
 

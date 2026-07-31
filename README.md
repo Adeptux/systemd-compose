@@ -117,3 +117,18 @@ services:
     volumes:
       - "/srv/postgres:/var/lib/postgresql/data"
 ```
+
+## Nuitka Linux Binary
+
+Build a standalone x86_64 Linux executable with Nuitka:
+
+```bash
+scripts/build-nuitka-linux.sh
+```
+
+The Docker builder uses the `manylinux2014_x86_64` image so the binary is built
+against an older glibc baseline than most current distros. Outputs are written to
+`dist/nuitka/`, including the executable, checksum, smoke-test output, builder
+glibc version, and referenced glibc symbols.
+
+See `packaging/nuitka/README.md` for details and build knobs.

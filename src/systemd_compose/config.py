@@ -10,9 +10,11 @@ DEFAULT_COMPOSE_FILE = "systemd-compose.yaml"
 DEFAULT_COMPOSE_FILES = (DEFAULT_COMPOSE_FILE, "systemd-compose.yml")
 
 
-def resolve_project_name(project_name: str | None) -> str:
+def resolve_project_name(project_name: str | None, config_project_name: str | None = None) -> str:
     if project_name:
         return project_name
+    if config_project_name:
+        return config_project_name
     return Path(os.getcwd()).name
 
 def resolve_compose_file(path: str) -> str:

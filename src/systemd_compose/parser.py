@@ -29,6 +29,7 @@ def parse_compose_data(data: Any, *, source: str = "<compose>") -> ComposeConfig
     if not isinstance(data, dict):
         raise SystemdComposeError(f"{source}: expected a mapping at document root")
 
+    project_name = _parse_project_name(data.get("name"), source)
     raw_services = data.get("services")
     if not isinstance(raw_services, dict) or not raw_services:
         raise SystemdComposeError(f"{source}: expected a non-empty services mapping")
@@ -66,7 +67,15 @@ def parse_compose_data(data: Any, *, source: str = "<compose>") -> ComposeConfig
                     f"{source}: service {service.name!r} depends on unknown service {dependency!r}"
                 )
 
-    return ComposeConfig(services=services)
+    return ComposeConfig(services=services, name=project_name)
+
+
+def _parse_project_name(value: Any, source: str) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    raise SystemdComposeError(f"{source}: name must be a non-empty string")
 
 
 def _parse_environment(value: Any, source: str, service_name: str) -> dict[str, str]:

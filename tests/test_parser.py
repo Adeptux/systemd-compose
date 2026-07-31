@@ -7,6 +7,7 @@ from systemd_compose.parser import parse_compose_data
 def test_parse_compose_data_supports_core_service_fields():
     config = parse_compose_data(
         {
+            "name": "demo",
             "services": {
                 "web": {
                     "command": "python -m http.server 8000",
@@ -25,6 +26,7 @@ def test_parse_compose_data_supports_core_service_fields():
         }
     )
 
+    assert config.name == "demo"
     web = config.services["web"]
 
     assert web.command == "python -m http.server 8000"
@@ -36,6 +38,21 @@ def test_parse_compose_data_supports_core_service_fields():
     assert web.depends_on == ["db"]
     assert web.working_dir == "/app"
     assert web.restart == "on-failure"
+
+
+@pytest.mark.parametrize("name", ["", "   ", 123, True])
+def test_parse_compose_data_rejects_invalid_name(name):
+    with pytest.raises(SystemdComposeError, match="name must be a non-empty string"):
+        parse_compose_data(
+            {
+                "name": name,
+                "services": {
+                    "web": {
+                        "command": "python -m http.server 8000",
+                    },
+                },
+            }
+        )
 
 
 def test_parse_compose_data_supports_docker_like_resources():

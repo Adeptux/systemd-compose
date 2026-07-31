@@ -46,6 +46,9 @@ as orphans. `up` warns about project-owned orphans, and `up --remove-orphans` or
 `down --remove-orphans` stops and resets them.
 
 By default the CLI looks for `systemd-compose.yaml`, then `systemd-compose.yml`.
+Set top-level `name:` in the compose file to choose the project name used as the
+systemd unit prefix. `-p/--project-name` overrides the file value, and the
+current directory name is still used when neither is set.
 
 Before starting or restarting a service, missing host-side volume paths are
 created as directories, similar to Docker Compose bind mount behavior. Dry runs
@@ -89,6 +92,8 @@ failures like Docker.
 Example `systemd-compose.yaml`:
 
 ```yaml
+name: demo
+
 services:
   web:
     command: "python -m http.server 8000"

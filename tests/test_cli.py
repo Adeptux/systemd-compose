@@ -34,6 +34,12 @@ services:
     return compose_file
 
 
+def write_named_compose_file(tmp_path: Path, name: str = "demo") -> Path:
+    compose_file = write_compose_file(tmp_path)
+    compose_file.write_text(f"name: {name}\n{compose_file.read_text(encoding='utf-8')}", encoding="utf-8")
+    return compose_file
+
+
 def write_health_compose_file(tmp_path: Path) -> Path:
     compose_file = tmp_path / "systemd-compose.yaml"
     compose_file.write_text(
@@ -63,6 +69,24 @@ def test_up_dry_run_prints_systemd_run_with_bwrap_payload(tmp_path: Path, capsys
     assert "/usr/bin/bwrap" in output
     assert f"--ro-bind {tmp_path / 'site'} /app" in output
     assert "--setenv PORT 8000" in output
+
+
+def test_up_uses_project_name_from_compose_file(tmp_path: Path, capsys):
+    compose_file = write_named_compose_file(tmp_path, "embedded")
+
+    exit_code = main(["-f", str(compose_file), "up", "--dry-run"])
+
+    assert exit_code == 0
+    assert "systemd-run --user --unit=embedded-web" in capsys.readouterr().out
+
+
+def test_cli_project_name_overrides_compose_file_name(tmp_path: Path, capsys):
+    compose_file = write_named_compose_file(tmp_path, "embedded")
+
+    exit_code = main(["-f", str(compose_file), "-p", "override", "up", "--dry-run"])
+
+    assert exit_code == 0
+    assert "systemd-run --user --unit=override-web" in capsys.readouterr().out
 
 
 def test_up_dry_run_prints_healthcheck_timer_command(tmp_path: Path, capsys):
@@ -410,6 +434,50 @@ def test_status_uses_user_systemctl_for_one_service(monkeypatch):
     assert calls == [
         (
             ["systemctl", "--user", "--no-pager", "status", "demo-web.service"],
+            False,
+        ),
+    ]
+
+
+def test_status_one_service_uses_project_name_from_compose_file(tmp_path: Path, monkeypatch):
+    compose_file = write_named_compose_file(tmp_path, "embedded")
+    calls: list[tuple[list[str], bool]] = []
+
+    def fake_run_command(command: list[str], *, check: bool = True) -> int:
+        calls.append((command, check))
+        return 0
+
+    patch_run_command(monkeypatch, fake_run_command)
+
+    exit_code = main(["-f", str(compose_file), "status", "web"])
+
+    assert exit_code == 0
+    assert calls == [
+        (
+            ["systemctl", "--user", "--no-pager", "status", "embedded-web.service"],
+            False,
+        ),
+    ]
+
+
+def test_status_one_service_falls_back_to_current_directory_without_compose_file(tmp_path: Path, monkeypatch):
+    project_dir = tmp_path / "fallback"
+    project_dir.mkdir()
+    monkeypatch.chdir(project_dir)
+    calls: list[tuple[list[str], bool]] = []
+
+    def fake_run_command(command: list[str], *, check: bool = True) -> int:
+        calls.append((command, check))
+        return 0
+
+    patch_run_command(monkeypatch, fake_run_command)
+
+    exit_code = main(["status", "web"])
+
+    assert exit_code == 0
+    assert calls == [
+        (
+            ["systemctl", "--user", "--no-pager", "status", "fallback-web.service"],
             False,
         ),
     ]
@@ -1217,6 +1285,60 @@ def test_logs_accepts_multiple_services(monkeypatch):
                 "demo-web.service",
                 "-u",
                 "demo-db.service",
+            ],
+            True,
+        ),
+    ]
+
+
+def test_logs_selected_service_uses_project_name_from_compose_file(tmp_path: Path, monkeypatch):
+    compose_file = write_named_compose_file(tmp_path, "embedded")
+    calls: list[tuple[list[str], bool]] = []
+
+    def fake_run_command(command: list[str], *, check: bool = True) -> int:
+        calls.append((command, check))
+        return 0
+
+    patch_run_command(monkeypatch, fake_run_command)
+
+    exit_code = main(["-f", str(compose_file), "logs", "web"])
+
+    assert exit_code == 0
+    assert calls == [
+        (
+            [
+                "journalctl",
+                "--user",
+                "-u",
+                "embedded-web.service",
+            ],
+            True,
+        ),
+    ]
+
+
+def test_logs_selected_service_falls_back_to_current_directory_without_compose_file(tmp_path: Path, monkeypatch):
+    project_dir = tmp_path / "fallback"
+    project_dir.mkdir()
+    monkeypatch.chdir(project_dir)
+    calls: list[tuple[list[str], bool]] = []
+
+    def fake_run_command(command: list[str], *, check: bool = True) -> int:
+        calls.append((command, check))
+        return 0
+
+    patch_run_command(monkeypatch, fake_run_command)
+
+    exit_code = main(["logs", "web"])
+
+    assert exit_code == 0
+    assert calls == [
+        (
+            [
+                "journalctl",
+                "--user",
+                "-u",
+                "fallback-web.service",
             ],
             True,
         ),

@@ -81,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-p",
         "--project-name",
         default=None,
-        help="project name used as the unit name prefix (default: current directory name)",
+        help="project name used as the unit name prefix (default: compose name, then current directory name)",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -181,9 +181,18 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def load_config_for_project_name(args: argparse.Namespace):
+    if args.project_name is not None:
+        return None
+    compose_file = resolve_compose_file(args.file)
+    if args.file == DEFAULT_COMPOSE_FILE and not os.path.exists(compose_file):
+        return None
+    return parse_compose_file(compose_file)
+
+
 def handle_up(args: argparse.Namespace) -> int | None:
     config = parse_compose_file(resolve_compose_file(args.file))
-    project_name = resolve_project_name(args.project_name)
+    project_name = resolve_project_name(args.project_name, config.name)
     service_names = selected_service_names(config.services, args.services)
     exit_code = 0
     orphans = find_orphan_units(project_name, set(config.services)) if args.remove_orphans or not args.dry_run else []
@@ -253,7 +262,7 @@ def handle_up(args: argparse.Namespace) -> int | None:
 
 def handle_start(args: argparse.Namespace) -> int:
     config = parse_compose_file(resolve_compose_file(args.file))
-    project_name = resolve_project_name(args.project_name)
+    project_name = resolve_project_name(args.project_name, config.name)
     service_names = selected_service_names(config.services, args.services)
     exit_code = 0
 
@@ -279,7 +288,7 @@ def handle_start(args: argparse.Namespace) -> int:
 
 def handle_stop(args: argparse.Namespace) -> int:
     config = parse_compose_file(resolve_compose_file(args.file))
-    project_name = resolve_project_name(args.project_name)
+    project_name = resolve_project_name(args.project_name, config.name)
     service_names = selected_service_names(config.services, args.services)
     exit_code = 0
 
@@ -297,7 +306,7 @@ def handle_stop(args: argparse.Namespace) -> int:
 
 def handle_restart(args: argparse.Namespace) -> int:
     config = parse_compose_file(resolve_compose_file(args.file))
-    project_name = resolve_project_name(args.project_name)
+    project_name = resolve_project_name(args.project_name, config.name)
     service_names = selected_service_names(config.services, args.services)
     exit_code = 0
 
@@ -320,7 +329,7 @@ def handle_restart(args: argparse.Namespace) -> int:
 
 def handle_down(args: argparse.Namespace) -> int:
     config = parse_compose_file(resolve_compose_file(args.file))
-    project_name = resolve_project_name(args.project_name)
+    project_name = resolve_project_name(args.project_name, config.name)
     service_names = selected_service_names(config.services, args.services)
     exit_code = 0
 
@@ -342,12 +351,13 @@ def handle_down(args: argparse.Namespace) -> int:
 
 
 def handle_status(args: argparse.Namespace) -> None:
-    project_name = resolve_project_name(args.project_name)
     if args.service:
         service_names = [args.service]
+        config = load_config_for_project_name(args)
     else:
         config = parse_compose_file(resolve_compose_file(args.file))
         service_names = list(config.services)
+    project_name = resolve_project_name(args.project_name, config.name if config is not None else None)
 
     units = [f"{unit_name(project_name, service_name)}.service" for service_name in service_names]
     return run_command(["systemctl", "--user", "--no-pager", "status", *units], check=False)
@@ -355,7 +365,7 @@ def handle_status(args: argparse.Namespace) -> None:
 
 def handle_ps(args: argparse.Namespace) -> None:
     config = parse_compose_file(resolve_compose_file(args.file))
-    project_name = resolve_project_name(args.project_name)
+    project_name = resolve_project_name(args.project_name, config.name)
     service_names = selected_service_names(config.services, args.services)
     rows = [
         build_ps_row(project_name, service_name, config.services[service_name])
@@ -366,7 +376,7 @@ def handle_ps(args: argparse.Namespace) -> None:
 
 def handle_stats(args: argparse.Namespace) -> None:
     config = parse_compose_file(resolve_compose_file(args.file))
-    project_name = resolve_project_name(args.project_name)
+    project_name = resolve_project_name(args.project_name, config.name)
     service_names = selected_service_names(config.services, args.services)
     cpu_count = os.cpu_count() or 1
     if args.interval < 0:
@@ -409,7 +419,7 @@ def handle_stats(args: argparse.Namespace) -> None:
 
 def handle_health(args: argparse.Namespace) -> None:
     config = parse_compose_file(resolve_compose_file(args.file))
-    project_name = resolve_project_name(args.project_name)
+    project_name = resolve_project_name(args.project_name, config.name)
     service_names = selected_service_names(config.services, args.services)
     rows = [
         build_health_row(project_name, service_name, config.services[service_name])
@@ -419,10 +429,15 @@ def handle_health(args: argparse.Namespace) -> None:
 
 
 def handle_logs(args: argparse.Namespace) -> None:
-    project_name = resolve_project_name(args.project_name)
     service_names, journal_args = split_log_args(args.log_args)
+    config = None
+    if args.project_name is None or not service_names:
+        config = (
+            load_config_for_project_name(args)
+            if service_names
+            else parse_compose_file(resolve_compose_file(args.file))
+        )
     if not service_names:
-        config = parse_compose_file(resolve_compose_file(args.file))
         if args.health:
             service_names = [
                 service_name
@@ -431,6 +446,7 @@ def handle_logs(args: argparse.Namespace) -> None:
             ]
         else:
             service_names = list(config.services)
+    project_name = resolve_project_name(args.project_name, config.name if config is not None else None)
 
     command = ["journalctl", "--user"]
     if args.follow:

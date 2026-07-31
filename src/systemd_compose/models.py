@@ -44,3 +44,4 @@ class Service:
 @dataclass(frozen=True)
 class ComposeConfig:
     services: dict[str, Service]
+    name: str | None = None

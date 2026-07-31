@@ -1,9 +1,10 @@
 # systemd-compose
 
-`systemd-compose` is an early Compose-like CLI for running services as transient
-systemd user units. Service commands are executed through `/usr/bin/bwrap`; the
-CLI does not generate unit files, wrapper scripts, PID files, or temporary
-runtime state.
+`systemd-compose` is an early Compose-like CLI for running services as systemd
+units. By default, `up` uses transient per-user units. Projects can also be
+installed as persistent user or system units so they survive reboot. Service
+commands are executed through `/usr/bin/bwrap`; the CLI does not generate
+wrapper scripts, PID files, or temporary runtime state.
 
 ## Quick Start
 
@@ -94,6 +95,47 @@ file:
 Use `--dry-run` to print the generated `systemd-run` commands without creating
 units or host-side volume directories.
 
+When a project has been installed, `up` manages the installed unit files instead
+of transient units:
+
+- Added services get new persistent unit files and are started through the
+  project target.
+- Changed services have their unit files rewritten and are restarted.
+- Removed services are reported as installed orphans.
+- `up --remove-orphans` stops and removes installed orphan units.
+
+### Install Persistent Units
+
+```bash
+uv run systemd-compose install
+uv run systemd-compose install --now
+sudo systemd-compose install --system --now
+uv run systemd-compose uninstall
+uv run systemd-compose uninstall --now
+```
+
+`install` writes persistent unit files and enables the generated project target.
+By default, user units are written to `~/.config/systemd/user/` and the project
+target is enabled under `default.target`.
+
+Use `install --system` as root to write system units to `/etc/systemd/system/`
+and enable the project target under `multi-user.target`.
+
+Lifecycle meaning:
+
+- `install` makes the project survive reboot.
+- `install --now` also starts the project after enabling it.
+- `uninstall` disables and removes generated persistent units.
+- `uninstall --now` stops the project before removing generated persistent
+  units.
+
+If you want user units to start at boot without an interactive login, enable
+linger for the account:
+
+```bash
+loginctl enable-linger "$USER"
+```
+
 ### Start, Stop, Restart, and Remove
 
 ```bash
@@ -111,6 +153,8 @@ Lifecycle commands have slightly different meanings:
 - `restart` restarts units that were already created by `up`.
 - `stop` stops units without resetting failed state.
 - `down` stops units and resets failed transient units.
+- For installed projects, `start`, `stop`, `restart`, and `down` operate on the
+  generated persistent project target or selected service units.
 - `down web db` limits cleanup to the named services.
 - `down --remove-orphans` also removes project-owned units that are no longer in
   the compose file.
@@ -138,8 +182,8 @@ Inspection commands:
 - `stats --no-stream` prints a single sampled snapshot.
 - `health` reports healthcheck state for all services or the named service.
 
-When inspecting units manually, use `systemctl --user`, not plain `systemctl`.
-For example:
+When inspecting user units manually, use `systemctl --user`, not plain
+`systemctl`. System installs use plain `systemctl`. For example:
 
 ```bash
 systemctl --user status demo-web.service

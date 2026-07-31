@@ -2,6 +2,7 @@ from pathlib import Path
 import subprocess
 
 import systemd_compose.cli
+import systemd_compose.persistence
 import systemd_compose.stats
 import systemd_compose.status
 import systemd_compose.systemd_units
@@ -52,6 +53,19 @@ services:
       interval: 10s
       timeout: 2s
       start_period: 5s
+""".lstrip(),
+        encoding="utf-8",
+    )
+    return compose_file
+
+
+def write_single_service_compose_file(tmp_path: Path, command: str = "python -m http.server 8000") -> Path:
+    compose_file = tmp_path / "systemd-compose.yaml"
+    compose_file.write_text(
+        f"""
+services:
+  web:
+    command: "{command}"
 """.lstrip(),
         encoding="utf-8",
     )
@@ -1461,4 +1475,168 @@ def test_logs_follow_is_opt_in(monkeypatch):
             ],
             True,
         ),
+    ]
+
+
+def test_install_writes_user_units_and_enables_project_target(tmp_path: Path, monkeypatch):
+    compose_file = write_health_compose_file(tmp_path)
+    config_home = tmp_path / "config"
+    run_calls: list[tuple[list[str], bool]] = []
+
+    def fake_run_command(command: list[str], *, check: bool = True) -> int:
+        run_calls.append((command, check))
+        return 0
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    patch_run_command(monkeypatch, fake_run_command)
+
+    exit_code = main(["-f", str(compose_file), "-p", "demo", "install", "--now"])
+
+    unit_dir = config_home / "systemd" / "user"
+    target_text = (unit_dir / "demo.target").read_text(encoding="utf-8")
+    assert exit_code == 0
+    assert (unit_dir / "demo-web.service").exists()
+    assert (unit_dir / "demo-web-health.service").exists()
+    assert (unit_dir / "demo-web-health.timer").exists()
+    assert "WantedBy=default.target" in target_text
+    assert "Wants=demo-web.service demo-web-health.timer" in target_text
+    assert "ExecStart=/usr/bin/bwrap" in (unit_dir / "demo-web.service").read_text(encoding="utf-8")
+    assert run_calls == [
+        (["systemctl", "--user", "daemon-reload"], True),
+        (["systemctl", "--user", "enable", "demo.target"], True),
+        (["systemctl", "--user", "start", "demo.target"], False),
+    ]
+
+
+def test_install_system_writes_system_units_and_uses_systemctl(tmp_path: Path, monkeypatch):
+    compose_file = write_single_service_compose_file(tmp_path)
+    system_unit_dir = tmp_path / "system-units"
+    run_calls: list[tuple[list[str], bool]] = []
+
+    def fake_run_command(command: list[str], *, check: bool = True) -> int:
+        run_calls.append((command, check))
+        return 0
+
+    monkeypatch.setattr(systemd_compose.persistence, "SYSTEM_UNIT_DIR", system_unit_dir)
+    monkeypatch.setattr(systemd_compose.persistence.os, "geteuid", lambda: 0)
+    patch_run_command(monkeypatch, fake_run_command)
+
+    exit_code = main(["-f", str(compose_file), "-p", "demo", "install", "--system"])
+
+    assert exit_code == 0
+    assert "WantedBy=multi-user.target" in (system_unit_dir / "demo.target").read_text(encoding="utf-8")
+    assert (system_unit_dir / "demo-web.service").exists()
+    assert run_calls == [
+        (["systemctl", "daemon-reload"], True),
+        (["systemctl", "enable", "demo.target"], True),
+    ]
+
+
+def test_up_for_installed_project_updates_changed_unit_and_restarts_it(tmp_path: Path, monkeypatch):
+    compose_file = write_single_service_compose_file(tmp_path, "python -m http.server 8000")
+    config_home = tmp_path / "config"
+    run_calls: list[tuple[list[str], bool]] = []
+
+    def fake_run_command(command: list[str], *, check: bool = True) -> int:
+        run_calls.append((command, check))
+        return 0
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    patch_run_command(monkeypatch, fake_run_command)
+
+    assert main(["-f", str(compose_file), "-p", "demo", "install"]) == 0
+    run_calls.clear()
+    compose_file.write_text(
+        """
+services:
+  web:
+    command: "python -m http.server 9000"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    exit_code = main(["-f", str(compose_file), "-p", "demo", "up"])
+
+    assert exit_code == 0
+    assert "9000" in (config_home / "systemd" / "user" / "demo-web.service").read_text(encoding="utf-8")
+    assert run_calls == [
+        (["systemctl", "--user", "daemon-reload"], True),
+        (["systemctl", "--user", "restart", "demo-web.service"], False),
+        (["systemctl", "--user", "start", "demo.target"], False),
+    ]
+
+
+def test_up_for_installed_project_adds_new_service(tmp_path: Path, monkeypatch):
+    compose_file = write_single_service_compose_file(tmp_path)
+    config_home = tmp_path / "config"
+    run_calls: list[tuple[list[str], bool]] = []
+
+    def fake_run_command(command: list[str], *, check: bool = True) -> int:
+        run_calls.append((command, check))
+        return 0
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    patch_run_command(monkeypatch, fake_run_command)
+
+    assert main(["-f", str(compose_file), "-p", "demo", "install"]) == 0
+    run_calls.clear()
+    compose_file.write_text(
+        """
+services:
+  web:
+    command: "python -m http.server 8000"
+  db:
+    command: "postgres -D /tmp/postgres-data"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    exit_code = main(["-f", str(compose_file), "-p", "demo", "up"])
+
+    unit_dir = config_home / "systemd" / "user"
+    assert exit_code == 0
+    assert (unit_dir / "demo-db.service").exists()
+    assert "Wants=demo-web.service demo-db.service" in (unit_dir / "demo.target").read_text(encoding="utf-8")
+    assert run_calls == [
+        (["systemctl", "--user", "daemon-reload"], True),
+        (["systemctl", "--user", "start", "demo.target"], False),
+    ]
+
+
+def test_up_for_installed_project_warns_and_removes_orphans(tmp_path: Path, monkeypatch, capsys):
+    compose_file = write_compose_file(tmp_path)
+    config_home = tmp_path / "config"
+    run_calls: list[tuple[list[str], bool]] = []
+
+    def fake_run_command(command: list[str], *, check: bool = True) -> int:
+        run_calls.append((command, check))
+        return 0
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    patch_run_command(monkeypatch, fake_run_command)
+
+    assert main(["-f", str(compose_file), "-p", "demo", "install"]) == 0
+    compose_file.write_text(
+        f"""
+services:
+  web:
+    command: "python -m http.server 8000"
+    volumes:
+      - "{tmp_path / 'site'}:/app:ro"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    run_calls.clear()
+
+    assert main(["-f", str(compose_file), "-p", "demo", "up"]) == 0
+    assert "Found installed orphan unit(s): demo-db.service." in capsys.readouterr().out
+    assert (config_home / "systemd" / "user" / "demo-db.service").exists()
+
+    run_calls.clear()
+    assert main(["-f", str(compose_file), "-p", "demo", "up", "--remove-orphans"]) == 0
+    assert not (config_home / "systemd" / "user" / "demo-db.service").exists()
+    assert run_calls == [
+        (["systemctl", "--user", "stop", "demo-db.service"], False),
+        (["systemctl", "--user", "daemon-reload"], True),
+        (["systemctl", "--user", "start", "demo.target"], False),
     ]

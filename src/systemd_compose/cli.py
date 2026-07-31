@@ -23,7 +23,18 @@ from systemd_compose.config import (
     split_log_args,
 )
 from systemd_compose.errors import SystemdComposeError
+from systemd_compose.models import Service
 from systemd_compose.parser import parse_compose_file
+from systemd_compose.persistence import (
+    installed_orphan_unit_names,
+    project_is_installed,
+    remove_orphan_unit_files,
+    remove_unit_files,
+    require_system_privileges,
+    sync_unit_files,
+    systemctl_command,
+    target_unit_name,
+)
 from systemd_compose.runner import run_command
 from systemd_compose.stats import collect_stats_snapshot, render_stats_table
 from systemd_compose.status import build_health_row, build_ps_row
@@ -69,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="systemd-compose",
-        description="Run Compose-like services as transient systemd user units with mandatory bwrap sandboxes.",
+        description="Run Compose-like services as systemd units with mandatory bwrap sandboxes.",
     )
     parser.add_argument(
         "-f",
@@ -97,18 +108,26 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="stop project units that are no longer present in the compose file",
     )
+    up_parser.add_argument(
+        "--system",
+        action="store_true",
+        help="operate on installed system units instead of user units",
+    )
     up_parser.add_argument("services", nargs="*", help="service names; omit to submit every service")
     up_parser.set_defaults(handler=handle_up)
 
     start_parser = subparsers.add_parser("start", help="start existing submitted services")
+    start_parser.add_argument("--system", action="store_true", help="operate on installed system units")
     start_parser.add_argument("services", nargs="*", help="service names; omit to start every service")
     start_parser.set_defaults(handler=handle_start)
 
     stop_parser = subparsers.add_parser("stop", help="stop submitted services without resetting them")
+    stop_parser.add_argument("--system", action="store_true", help="operate on installed system units")
     stop_parser.add_argument("services", nargs="*", help="service names; omit to stop every service")
     stop_parser.set_defaults(handler=handle_stop)
 
     restart_parser = subparsers.add_parser("restart", help="restart existing submitted services")
+    restart_parser.add_argument("--system", action="store_true", help="operate on installed system units")
     restart_parser.add_argument("services", nargs="*", help="service names; omit to restart every service")
     restart_parser.set_defaults(handler=handle_restart)
 
@@ -118,8 +137,24 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also stop project units that are no longer present in the compose file",
     )
+    down_parser.add_argument("--system", action="store_true", help="operate on installed system units")
     down_parser.add_argument("services", nargs="*", help="service names; omit to stop every service")
     down_parser.set_defaults(handler=handle_down)
+
+    install_parser = subparsers.add_parser("install", help="install persistent systemd units")
+    install_parser.add_argument("--system", action="store_true", help="install system units instead of user units")
+    install_parser.add_argument("--now", action="store_true", help="start the installed project after enabling it")
+    install_parser.add_argument(
+        "--remove-orphans",
+        action="store_true",
+        help="remove installed project units that are no longer present in the compose file",
+    )
+    install_parser.set_defaults(handler=handle_install)
+
+    uninstall_parser = subparsers.add_parser("uninstall", help="remove persistent systemd units")
+    uninstall_parser.add_argument("--system", action="store_true", help="remove system units instead of user units")
+    uninstall_parser.add_argument("--now", action="store_true", help="stop the installed project before removing it")
+    uninstall_parser.set_defaults(handler=handle_uninstall)
 
     status_parser = subparsers.add_parser("status", help="show systemd status for submitted services")
     status_parser.add_argument(
@@ -194,6 +229,19 @@ def handle_up(args: argparse.Namespace) -> int | None:
     config = parse_compose_file(resolve_compose_file(args.file))
     project_name = resolve_project_name(args.project_name, config.name)
     service_names = selected_service_names(config.services, args.services)
+    require_system_privileges(system=args.system)
+    if not args.dry_run and project_is_installed(project_name, system=args.system):
+        return reconcile_installed_project(
+            project_name,
+            config.services,
+            selected_service_names=service_names if args.services else [],
+            current_service_names=set(config.services),
+            remove_orphans=args.remove_orphans,
+            system=args.system,
+            restart_changed=True,
+        )
+    if args.system:
+        raise SystemdComposeError("up --system requires an installed system project; run install --system first")
     exit_code = 0
     orphans = find_orphan_units(project_name, set(config.services)) if args.remove_orphans or not args.dry_run else []
 
@@ -260,10 +308,140 @@ def handle_up(args: argparse.Namespace) -> int | None:
     return None if args.dry_run else exit_code
 
 
+def handle_install(args: argparse.Namespace) -> int:
+    require_system_privileges(system=args.system)
+    config = parse_compose_file(resolve_compose_file(args.file))
+    project_name = resolve_project_name(args.project_name, config.name)
+    ensure_all_volume_host_paths(config.services)
+    changes = sync_unit_files(project_name, config.services, system=args.system)
+    if args.remove_orphans:
+        changes.extend(remove_orphan_unit_files(project_name, set(config.services), system=args.system))
+    elif orphan_names := installed_orphan_unit_names(project_name, set(config.services), system=args.system):
+        print(
+            "Found installed orphan unit(s): "
+            f"{', '.join(orphan_names)}. "
+            "Use install --remove-orphans to remove them."
+        )
+    ctl = systemctl_command(system=args.system)
+    if changes:
+        run_command([*ctl, "daemon-reload"])
+    run_command([*ctl, "enable", target_unit_name(project_name)])
+    if args.now:
+        return start_installed_units(project_name, [], system=args.system)
+    return 0
+
+
+def handle_uninstall(args: argparse.Namespace) -> int:
+    require_system_privileges(system=args.system)
+    config = load_config_for_project_name(args)
+    project_name = resolve_project_name(args.project_name, config.name if config is not None else None)
+    ctl = systemctl_command(system=args.system)
+    target = target_unit_name(project_name)
+    exit_code = 0
+    if args.now:
+        exit_code = run_command([*ctl, "stop", target], check=False)
+    disable_exit_code = run_command([*ctl, "disable", target], check=False)
+    if disable_exit_code != 0 and exit_code == 0:
+        exit_code = disable_exit_code
+    changes = remove_unit_files(project_name, system=args.system)
+    if changes:
+        run_command([*ctl, "daemon-reload"])
+    return exit_code
+
+
+def reconcile_installed_project(
+    project_name: str,
+    services: dict[str, Service],
+    *,
+    selected_service_names: list[str],
+    current_service_names: set[str],
+    remove_orphans: bool,
+    system: bool,
+    restart_changed: bool,
+) -> int:
+    ensure_all_volume_host_paths(services)
+    changes = sync_unit_files(project_name, services, system=system)
+    orphan_names = installed_orphan_unit_names(project_name, current_service_names, system=system)
+    ctl = systemctl_command(system=system)
+    exit_code = 0
+
+    if remove_orphans:
+        for orphan in orphan_names:
+            stop_exit_code = run_command([*ctl, "stop", orphan], check=False)
+            if stop_exit_code != 0 and exit_code == 0:
+                exit_code = stop_exit_code
+        changes.extend(remove_orphan_unit_files(project_name, current_service_names, system=system))
+    elif orphan_names:
+        print(
+            "Found installed orphan unit(s): "
+            f"{', '.join(orphan_names)}. "
+            "Use up --remove-orphans to stop, disable, and remove them."
+        )
+
+    if changes:
+        run_command([*ctl, "daemon-reload"])
+
+    if restart_changed:
+        selected_units = {
+            f"{unit_name(project_name, service_name)}.service"
+            for service_name in selected_service_names
+        }
+        for change in changes:
+            if change.action != "updated" or not change.path.name.endswith(".service"):
+                continue
+            if change.path.name.endswith("-health.service"):
+                continue
+            if selected_units and change.path.name not in selected_units:
+                continue
+            restart_exit_code = run_command([*ctl, "restart", change.path.name], check=False)
+            if restart_exit_code != 0 and exit_code == 0:
+                exit_code = restart_exit_code
+
+    start_exit_code = start_installed_units(project_name, selected_service_names, system=system)
+    if start_exit_code != 0 and exit_code == 0:
+        exit_code = start_exit_code
+    return exit_code
+
+
+def start_installed_units(project_name: str, service_names: list[str], *, system: bool) -> int:
+    ctl = systemctl_command(system=system)
+    if not service_names:
+        return run_command([*ctl, "start", target_unit_name(project_name)], check=False)
+    units = [f"{unit_name(project_name, service_name)}.service" for service_name in service_names]
+    return run_command([*ctl, "start", *units], check=False)
+
+
+def stop_installed_units(project_name: str, service_names: list[str], *, system: bool) -> int:
+    ctl = systemctl_command(system=system)
+    if not service_names:
+        return run_command([*ctl, "stop", target_unit_name(project_name)], check=False)
+    units = [f"{unit_name(project_name, service_name)}.service" for service_name in reversed(service_names)]
+    return run_command([*ctl, "stop", *units], check=False)
+
+
+def restart_installed_units(project_name: str, service_names: list[str], *, system: bool) -> int:
+    ctl = systemctl_command(system=system)
+    if not service_names:
+        return run_command([*ctl, "restart", target_unit_name(project_name)], check=False)
+    units = [f"{unit_name(project_name, service_name)}.service" for service_name in service_names]
+    return run_command([*ctl, "restart", *units], check=False)
+
+
+def ensure_all_volume_host_paths(services: dict[str, Service]) -> None:
+    for service in services.values():
+        ensure_volume_host_paths(service)
+
+
 def handle_start(args: argparse.Namespace) -> int:
     config = parse_compose_file(resolve_compose_file(args.file))
     project_name = resolve_project_name(args.project_name, config.name)
     service_names = selected_service_names(config.services, args.services)
+    require_system_privileges(system=args.system)
+    if project_is_installed(project_name, system=args.system):
+        ensure_all_volume_host_paths({name: config.services[name] for name in service_names})
+        return start_installed_units(project_name, service_names if args.services else [], system=args.system)
+    if args.system:
+        raise SystemdComposeError("start --system requires an installed system project")
     exit_code = 0
 
     for service_name in service_names:
@@ -290,6 +468,11 @@ def handle_stop(args: argparse.Namespace) -> int:
     config = parse_compose_file(resolve_compose_file(args.file))
     project_name = resolve_project_name(args.project_name, config.name)
     service_names = selected_service_names(config.services, args.services)
+    require_system_privileges(system=args.system)
+    if project_is_installed(project_name, system=args.system):
+        return stop_installed_units(project_name, service_names if args.services else [], system=args.system)
+    if args.system:
+        raise SystemdComposeError("stop --system requires an installed system project")
     exit_code = 0
 
     for service_name in reversed(service_names):
@@ -308,6 +491,12 @@ def handle_restart(args: argparse.Namespace) -> int:
     config = parse_compose_file(resolve_compose_file(args.file))
     project_name = resolve_project_name(args.project_name, config.name)
     service_names = selected_service_names(config.services, args.services)
+    require_system_privileges(system=args.system)
+    if project_is_installed(project_name, system=args.system):
+        ensure_all_volume_host_paths({name: config.services[name] for name in service_names})
+        return restart_installed_units(project_name, service_names if args.services else [], system=args.system)
+    if args.system:
+        raise SystemdComposeError("restart --system requires an installed system project")
     exit_code = 0
 
     for service_name in service_names:
@@ -331,6 +520,21 @@ def handle_down(args: argparse.Namespace) -> int:
     config = parse_compose_file(resolve_compose_file(args.file))
     project_name = resolve_project_name(args.project_name, config.name)
     service_names = selected_service_names(config.services, args.services)
+    require_system_privileges(system=args.system)
+    if project_is_installed(project_name, system=args.system):
+        exit_code = stop_installed_units(project_name, service_names if args.services else [], system=args.system)
+        if args.remove_orphans:
+            ctl = systemctl_command(system=args.system)
+            orphan_names = installed_orphan_unit_names(project_name, set(config.services), system=args.system)
+            for orphan in orphan_names:
+                orphan_exit_code = run_command([*ctl, "stop", orphan], check=False)
+                if orphan_exit_code != 0 and exit_code == 0:
+                    exit_code = orphan_exit_code
+            if remove_orphan_unit_files(project_name, set(config.services), system=args.system):
+                run_command([*ctl, "daemon-reload"])
+        return exit_code
+    if args.system:
+        raise SystemdComposeError("down --system requires an installed system project")
     exit_code = 0
 
     for service_name in reversed(service_names):

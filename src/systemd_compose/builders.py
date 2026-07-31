@@ -17,6 +17,7 @@ ACCOUNTING_PROPERTIES = [
     "IOAccounting=yes",
     "IPAccounting=yes",
 ]
+GENERATED_UNIT_MARKER = "X-SystemdCompose=1"
 
 BASE_BWRAP_ARGS = [
     "--dev-bind",
@@ -143,6 +144,105 @@ def build_health_systemd_run_command(project_name: str, service_name: str, servi
     return command
 
 
+def build_project_target_unit(project_name: str, wanted_units: list[str], *, system: bool = False) -> str:
+    wanted_by = "multi-user.target" if system else "default.target"
+    return _unit_text(
+        [
+            "[Unit]",
+            f"Description=systemd-compose project: {project_name}",
+            GENERATED_UNIT_MARKER,
+            f"Wants={' '.join(wanted_units)}" if wanted_units else "",
+            "",
+            "[Install]",
+            f"WantedBy={wanted_by}",
+        ]
+    )
+
+
+def build_installed_service_unit(project_name: str, service_name: str, service: Service) -> str:
+    unit = unit_name(project_name, service_name)
+    lines = [
+        "[Unit]",
+        f"Description={build_description(project_name, service_name, service)}",
+        GENERATED_UNIT_MARKER,
+    ]
+    for dependency in service.depends_on:
+        dependency_unit = f"{unit_name(project_name, dependency)}.service"
+        lines.append(f"Requires={dependency_unit}")
+        lines.append(f"After={dependency_unit}")
+        lines.append(f"BindsTo={dependency_unit}")
+    lines.extend(
+        [
+            "",
+            "[Service]",
+            f"SyslogIdentifier={unit}",
+            *ACCOUNTING_PROPERTIES,
+        ]
+    )
+    if service.restart is not None:
+        lines.append(f"Restart={service.restart}")
+    lines.extend(build_resource_properties(service.resources))
+    lines.append(f"ExecStart={_systemd_exec(build_service_payload(service))}")
+    lines.extend(
+        [
+            "",
+            "[Install]",
+            f"WantedBy={unit_prefix(project_name).removesuffix('-')}.target",
+        ]
+    )
+    return _unit_text(lines)
+
+
+def build_installed_health_service_unit(project_name: str, service_name: str, service: Service) -> str | None:
+    if service.healthcheck is None or service.healthcheck.disabled:
+        return None
+
+    unit = unit_name(project_name, service_name)
+    health_unit = health_unit_name(project_name, service_name)
+    return _unit_text(
+        [
+            "[Unit]",
+            f"Description={build_health_description(project_name, service_name, service)}",
+            GENERATED_UNIT_MARKER,
+            f"Requires={unit}.service",
+            f"After={unit}.service",
+            f"BindsTo={unit}.service",
+            "",
+            "[Service]",
+            "Type=oneshot",
+            f"SyslogIdentifier={health_unit}",
+            f"TimeoutStartSec={service.healthcheck.timeout}",
+            f"ExecStart={_systemd_exec(build_health_service_payload(service))}",
+        ]
+    )
+
+
+def build_installed_health_timer_unit(project_name: str, service_name: str, service: Service) -> str | None:
+    if service.healthcheck is None or service.healthcheck.disabled:
+        return None
+
+    unit = unit_name(project_name, service_name)
+    health_unit = health_unit_name(project_name, service_name)
+    return _unit_text(
+        [
+            "[Unit]",
+            f"Description=systemd-compose healthcheck timer: {project_name} {service_name}",
+            GENERATED_UNIT_MARKER,
+            f"Requires={unit}.service",
+            f"After={unit}.service",
+            f"BindsTo={unit}.service",
+            "",
+            "[Timer]",
+            f"OnActiveSec={service.healthcheck.start_period}",
+            f"OnUnitActiveSec={service.healthcheck.interval}",
+            f"Unit={health_unit}.service",
+            "",
+            "[Install]",
+            f"WantedBy={unit_prefix(project_name).removesuffix('-')}.target",
+        ]
+    )
+
+
 def build_health_service_payload(service: Service) -> list[str]:
     if service.healthcheck is None or service.healthcheck.disabled:
         raise SystemdComposeError(f"service {service.name!r} does not have an enabled healthcheck")
@@ -248,6 +348,14 @@ def _cpu_quota(cpus: str) -> str:
     if cpus.endswith("%"):
         return cpus
     return f"{float(cpus) * 100:g}%"
+
+
+def _systemd_exec(argv: list[str]) -> str:
+    return " ".join(shlex.quote(part) for part in argv)
+
+
+def _unit_text(lines: list[str]) -> str:
+    return "\n".join(line for line in lines if line != "") + "\n"
 
 
 def health_definition_data(project_name: str, service_name: str, service: Service) -> dict[str, object] | None:

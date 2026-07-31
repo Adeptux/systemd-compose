@@ -1,7 +1,7 @@
 [project]
 name = "systemd-compose"
 version = "0.1.0"
-description = "Compose-like transient systemd user units with mandatory bwrap sandboxes"
+description = "Compose-like systemd units with mandatory bwrap sandboxes"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

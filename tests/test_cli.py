@@ -582,6 +582,26 @@ def test_status_uses_user_systemctl_for_one_service(monkeypatch):
     ]
 
 
+def test_status_uses_user_systemctl_for_multiple_services(monkeypatch):
+    calls: list[tuple[list[str], bool]] = []
+
+    def fake_run_command(command: list[str], *, check: bool = True) -> int:
+        calls.append((command, check))
+        return 0
+
+    patch_run_command(monkeypatch, fake_run_command)
+
+    exit_code = main(["-p", "demo", "status", "web", "db"])
+
+    assert exit_code == 0
+    assert calls == [
+        (
+            ["systemctl", "--user", "--no-pager", "status", "demo-web.service", "demo-db.service"],
+            False,
+        ),
+    ]
+
+
 def test_status_one_service_uses_project_name_from_compose_file(tmp_path: Path, monkeypatch):
     compose_file = write_named_compose_file(tmp_path, "embedded")
     calls: list[tuple[list[str], bool]] = []
@@ -603,6 +623,23 @@ def test_status_one_service_uses_project_name_from_compose_file(tmp_path: Path, 
     ]
 
 
+def test_status_validates_selected_services_when_compose_file_is_available(tmp_path: Path, monkeypatch, capsys):
+    compose_file = write_compose_file(tmp_path)
+    calls: list[tuple[list[str], bool]] = []
+
+    def fake_run_command(command: list[str], *, check: bool = True) -> int:
+        calls.append((command, check))
+        return 0
+
+    patch_run_command(monkeypatch, fake_run_command)
+
+    exit_code = main(["-f", str(compose_file), "-p", "demo", "status", "web", "cache"])
+
+    assert exit_code == 2
+    assert "unknown service(s): cache" in capsys.readouterr().err
+    assert calls == []
+
+
 def test_status_one_service_falls_back_to_current_directory_without_compose_file(tmp_path: Path, monkeypatch):
     project_dir = tmp_path / "fallback"
     project_dir.mkdir()
@@ -621,6 +658,32 @@ def test_status_one_service_falls_back_to_current_directory_without_compose_file
     assert calls == [
         (
             ["systemctl", "--user", "--no-pager", "status", "fallback-web.service"],
+            False,
+        ),
+    ]
+
+
+def test_status_multiple_services_falls_back_to_current_directory_without_compose_file(
+    tmp_path: Path,
+    monkeypatch,
+):
+    project_dir = tmp_path / "fallback"
+    project_dir.mkdir()
+    monkeypatch.chdir(project_dir)
+    calls: list[tuple[list[str], bool]] = []
+
+    def fake_run_command(command: list[str], *, check: bool = True) -> int:
+        calls.append((command, check))
+        return 0
+
+    patch_run_command(monkeypatch, fake_run_command)
+
+    exit_code = main(["status", "web", "db"])
+
+    assert exit_code == 0
+    assert calls == [
+        (
+            ["systemctl", "--user", "--no-pager", "status", "fallback-web.service", "fallback-db.service"],
             False,
         ),
     ]

@@ -211,6 +211,7 @@ Lifecycle commands have slightly different meanings:
 ```bash
 uv run systemd-compose status
 uv run systemd-compose status web
+uv run systemd-compose status web db
 uv run systemd-compose ps
 uv run systemd-compose stats
 uv run systemd-compose stats --interval 2
@@ -222,7 +223,7 @@ uv run systemd-compose health web
 Inspection commands:
 
 - `status` shows `systemctl --user status` output for all services or the named
-  service.
+  services.
 - `ps` prints a one-shot service table from systemd unit state.
 - `stats` streams resource usage once per second by default.
 - `stats --interval 2` changes the refresh interval.

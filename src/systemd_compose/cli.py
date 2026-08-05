@@ -178,9 +178,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     status_parser = subparsers.add_parser("status", help="show systemd status for submitted services")
     status_parser.add_argument(
-        "service",
-        nargs="?",
-        help="service name; omit to show every service from the compose file",
+        "services",
+        nargs="*",
+        help="service names; omit to show every service from the compose file",
     )
     status_parser.set_defaults(handler=handle_status)
 
@@ -584,9 +584,18 @@ def handle_down(args: argparse.Namespace) -> int:
 
 
 def handle_status(args: argparse.Namespace) -> None:
-    if args.service:
-        service_names = [args.service]
-        config = load_config_for_project_name(args)
+    if args.services:
+        compose_file = resolve_compose_file(args.file)
+        should_load_config = (
+            args.file != DEFAULT_COMPOSE_FILE
+            or (args.project_name is None and os.path.exists(compose_file))
+        )
+        config = parse_compose_file(compose_file) if should_load_config else None
+        service_names = (
+            selected_service_names(config.services, args.services)
+            if config is not None
+            else args.services
+        )
     else:
         config = parse_compose_file(resolve_compose_file(args.file))
         service_names = list(config.services)

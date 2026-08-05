@@ -1,5 +1,7 @@
 # systemd-compose
 
+[![CI](https://github.com/Adeptux/systemd-compose/actions/workflows/ci.yml/badge.svg)](https://github.com/Adeptux/systemd-compose/actions/workflows/ci.yml)
+
 `systemd-compose` is an early Compose-like CLI for running services as systemd
 units. By default, `up` uses transient per-user units. Projects can also be
 installed as persistent user or system units so they survive reboot. Service

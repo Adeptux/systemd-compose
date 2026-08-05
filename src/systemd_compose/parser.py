@@ -8,7 +8,7 @@ from typing import Any
 import yaml
 
 from systemd_compose.errors import SystemdComposeError
-from systemd_compose.models import ComposeConfig, Healthcheck, Resources, Service, Volume
+from systemd_compose.models import ComposeConfig, Healthcheck, Resources, Service, Tmpfs, Volume
 
 RESOURCE_KEYS = {"mem_limit", "cpus", "pids_limit"}
 MEMORY_UNITS = {"b": "", "k": "K", "m": "M", "g": "G", "t": "T", "p": "P", "e": "E"}
@@ -207,16 +207,85 @@ def _parse_volumes(value: Any, source: str, service_name: str) -> list[Volume]:
     return volumes
 
 
-def _parse_tmpfs(value: Any, source: str, service_name: str) -> list[str]:
+def _parse_tmpfs(value: Any, source: str, service_name: str) -> list[Tmpfs]:
     if value is None:
         return []
     if isinstance(value, str) and value:
-        return [value]
+        return [_parse_tmpfs_entry(value, source, service_name)]
     if isinstance(value, list) and all(isinstance(item, str) and item for item in value):
-        return list(value)
+        return [_parse_tmpfs_entry(item, source, service_name) for item in value]
     raise SystemdComposeError(
         f"{source}: service {service_name!r} tmpfs must be a non-empty string or list of non-empty strings"
     )
+
+
+def _parse_tmpfs_entry(value: str, source: str, service_name: str) -> Tmpfs:
+    target, separator, raw_options = value.partition(":")
+    if not target:
+        raise SystemdComposeError(f"{source}: service {service_name!r} tmpfs target cannot be empty")
+    size: int | None = None
+    mode: str | None = None
+    if not separator:
+        return Tmpfs(target=target)
+    if not raw_options:
+        raise SystemdComposeError(f"{source}: service {service_name!r} tmpfs options cannot be empty")
+
+    for raw_option in raw_options.split(","):
+        key, option_separator, option_value = raw_option.partition("=")
+        if not option_separator or not key or not option_value:
+            raise SystemdComposeError(
+                f"{source}: service {service_name!r} tmpfs options must be key=value pairs"
+            )
+        if key == "size":
+            size = _parse_tmpfs_size(option_value, source, service_name)
+        elif key == "mode":
+            mode = _parse_tmpfs_mode(option_value, source, service_name)
+        else:
+            raise SystemdComposeError(
+                f"{source}: service {service_name!r} tmpfs option {key!r} is not supported"
+            )
+    return Tmpfs(target=target, size=size, mode=mode)
+
+
+def _parse_tmpfs_size(value: str, source: str, service_name: str) -> int:
+    raw_size = value.strip()
+    numeric_value = raw_size
+    multiplier = 1
+    if raw_size and raw_size[-1].isalpha():
+        unit_key = raw_size[-1].lower()
+        multipliers = {
+            "b": 1,
+            "k": 1024,
+            "m": 1024**2,
+            "g": 1024**3,
+            "t": 1024**4,
+            "p": 1024**5,
+            "e": 1024**6,
+        }
+        if unit_key not in multipliers:
+            raise SystemdComposeError(f"{source}: service {service_name!r} tmpfs size must be a positive size")
+        numeric_value = raw_size[:-1]
+        multiplier = multipliers[unit_key]
+    try:
+        parsed = float(numeric_value)
+    except ValueError as exc:
+        raise SystemdComposeError(f"{source}: service {service_name!r} tmpfs size must be a positive size") from exc
+    if parsed <= 0:
+        raise SystemdComposeError(f"{source}: service {service_name!r} tmpfs size must be a positive size")
+    return int(parsed * multiplier)
+
+
+def _parse_tmpfs_mode(value: str, source: str, service_name: str) -> str:
+    if not re.fullmatch(r"0?[0-7]{3,4}", value):
+        raise SystemdComposeError(
+            f"{source}: service {service_name!r} tmpfs mode must be an octal mode"
+        )
+    normalized = value if value.startswith("0") else f"0{value}"
+    if len(normalized) > 5:
+        raise SystemdComposeError(
+            f"{source}: service {service_name!r} tmpfs mode must be an octal mode"
+        )
+    return normalized
 
 
 def _parse_depends_on(value: Any, source: str, service_name: str) -> list[str]:

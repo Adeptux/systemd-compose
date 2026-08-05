@@ -34,7 +34,9 @@ def test_parse_compose_data_supports_core_service_fields():
     assert web.volumes[0].host_path == "/srv/site"
     assert web.volumes[0].sandbox_path == "/app"
     assert web.volumes[0].read_only is True
-    assert web.tmpfs == ["/var/lib/nginx"]
+    assert web.tmpfs[0].target == "/var/lib/nginx"
+    assert web.tmpfs[0].size is None
+    assert web.tmpfs[0].mode is None
     assert web.depends_on == ["db"]
     assert web.working_dir == "/app"
     assert web.restart == "on-failure"
@@ -410,6 +412,57 @@ def test_parse_compose_data_rejects_invalid_tmpfs(tmpfs):
                     "web": {
                         "command": "python -m http.server 8000",
                         "tmpfs": tmpfs,
+                    },
+                }
+            }
+        )
+
+
+def test_parse_compose_data_supports_tmpfs_options():
+    config = parse_compose_data(
+        {
+            "services": {
+                "web": {
+                    "command": "python -m http.server 8000",
+                    "tmpfs": [
+                        "/run/cache:size=256m,mode=1777",
+                        "/run/private:mode=700,size=1k",
+                    ],
+                },
+            }
+        }
+    )
+
+    cache, private = config.services["web"].tmpfs
+
+    assert cache.target == "/run/cache"
+    assert cache.size == 256 * 1024 * 1024
+    assert cache.mode == "01777"
+    assert private.target == "/run/private"
+    assert private.size == 1024
+    assert private.mode == "0700"
+
+
+@pytest.mark.parametrize(
+    ("tmpfs", "message"),
+    [
+        (":size=1m", "tmpfs target cannot be empty"),
+        ("/run/cache:", "tmpfs options cannot be empty"),
+        ("/run/cache:size", "tmpfs options must be key=value pairs"),
+        ("/run/cache:size=0", "tmpfs size must be a positive size"),
+        ("/run/cache:size=bad", "tmpfs size must be a positive size"),
+        ("/run/cache:mode=888", "tmpfs mode must be an octal mode"),
+        ("/run/cache:uid=1000", "tmpfs option 'uid' is not supported"),
+    ],
+)
+def test_parse_compose_data_rejects_invalid_tmpfs_options(tmpfs, message):
+    with pytest.raises(SystemdComposeError, match=message):
+        parse_compose_data(
+            {
+                "services": {
+                    "web": {
+                        "command": "python -m http.server 8000",
+                        "tmpfs": [tmpfs],
                     },
                 }
             }

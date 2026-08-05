@@ -59,8 +59,12 @@ def build_bwrap_args(service: Service) -> list[str]:
         bind_arg = "--ro-bind" if volume.read_only else "--bind"
         args.extend([bind_arg, volume.host_path, volume.sandbox_path])
 
-    for tmpfs_path in service.tmpfs:
-        args.extend(["--tmpfs", tmpfs_path])
+    for tmpfs in service.tmpfs:
+        if tmpfs.size is not None:
+            args.extend(["--size", str(tmpfs.size)])
+        if tmpfs.mode is not None:
+            args.extend(["--perms", tmpfs.mode])
+        args.extend(["--tmpfs", tmpfs.target])
 
     for key, value in service.environment.items():
         if not key:

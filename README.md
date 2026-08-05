@@ -317,8 +317,9 @@ Supported service fields:
   mapping are converted to strings.
 - `volumes`: Optional list of string bind mounts in `HOST:SANDBOX` or
   `HOST:SANDBOX:ro` form. Only `:ro` is accepted as a mode.
-- `tmpfs`: Optional non-empty string or list of non-empty strings. Each value is
-  passed to `bwrap --tmpfs`.
+- `tmpfs`: Optional non-empty string or list of non-empty strings. Entries use
+  Docker Compose-like syntax such as `/run/cache` or
+  `/run/cache:size=256m,mode=1777`.
 - `depends_on`: Optional list of service names or mapping whose keys are service
   names. Conditions and other Compose dependency options are ignored; only the
   service names are used.
@@ -360,6 +361,26 @@ Before starting or restarting a service, missing host-side bind sources are
 created as directories, including read-only binds. Dry runs do not create
 directories. File binds, explicit file-versus-directory behavior, named volumes,
 and structured bind syntax are not modeled yet.
+
+### Tmpfs Mounts
+
+`tmpfs` entries create writable in-sandbox tmpfs mounts:
+
+```yaml
+tmpfs:
+  - "/run/cache"
+  - "/var/cache/nginx:size=256m,mode=1777"
+```
+
+Supported options:
+
+- `size`: Positive byte count or size string using `b`, `k`, `m`, `g`, `t`,
+  `p`, or `e` suffixes. Values are passed to `bwrap --size` as bytes.
+- `mode`: Octal mode such as `700`, `0700`, or `1777`. Values are passed to
+  `bwrap --perms`.
+
+Ownership options are not supported because `bwrap --tmpfs` does not provide a
+direct uid/gid setting for the created tmpfs mount.
 
 ### Resource Limits
 

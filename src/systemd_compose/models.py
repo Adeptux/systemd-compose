@@ -11,6 +11,13 @@ class Volume:
 
 
 @dataclass(frozen=True)
+class Tmpfs:
+    target: str
+    size: int | None = None
+    mode: str | None = None
+
+
+@dataclass(frozen=True)
 class Resources:
     mem_limit: str | None = None
     cpus: str | None = None
@@ -33,7 +40,7 @@ class Service:
     command: str | list[str]
     environment: dict[str, str] = field(default_factory=dict)
     volumes: list[Volume] = field(default_factory=list)
-    tmpfs: list[str] = field(default_factory=list)
+    tmpfs: list[Tmpfs] = field(default_factory=list)
     depends_on: list[str] = field(default_factory=list)
     working_dir: str | None = None
     restart: str | None = None

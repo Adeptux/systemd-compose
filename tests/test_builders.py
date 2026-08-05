@@ -6,7 +6,7 @@ from systemd_compose.builders import (
     build_systemd_run_command,
     service_definition_hash,
 )
-from systemd_compose.models import Healthcheck, Resources, Service, Volume
+from systemd_compose.models import Healthcheck, Resources, Service, Tmpfs, Volume
 
 
 def test_service_payload_always_starts_with_bwrap():
@@ -24,7 +24,7 @@ def test_bwrap_args_include_mounts_environment_workdir_and_command():
             Volume("/srv/site", "/app", read_only=True),
             Volume("/var/cache/site", "/cache"),
         ],
-        tmpfs=["/var/lib/nginx"],
+        tmpfs=[Tmpfs("/var/lib/nginx")],
         working_dir="/app",
     )
 
@@ -40,6 +40,20 @@ def test_bwrap_args_include_mounts_environment_workdir_and_command():
     assert ["--setenv", "PORT", "8000"] == args[args.index("PORT") - 1 : args.index("8000") + 1]
     assert ["--chdir", "/app"] == args[args.index("--chdir") : args.index("--chdir") + 2]
     assert args[-5:] == ["--", "python", "-m", "http.server", "8000"]
+
+
+def test_bwrap_args_include_tmpfs_options():
+    service = Service(
+        name="web",
+        command="true",
+        tmpfs=[Tmpfs("/var/cache/nginx", size=268435456, mode="01777")],
+    )
+
+    args = build_bwrap_args(service)
+
+    assert ["--size", "268435456", "--perms", "01777", "--tmpfs", "/var/cache/nginx"] == args[
+        args.index("--size") : args.index("/var/cache/nginx") + 1
+    ]
 
 
 def test_bwrap_base_args_do_not_include_unsupported_sysfs_option():

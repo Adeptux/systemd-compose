@@ -1,6 +1,8 @@
 from pathlib import Path
 import subprocess
 
+import pytest
+
 import systemd_compose.cli
 import systemd_compose.persistence
 import systemd_compose.stats
@@ -8,7 +10,15 @@ import systemd_compose.status
 import systemd_compose.systemd_units
 from systemd_compose.builders import service_definition_hash
 from systemd_compose.cli import main
+from systemd_compose.errors import SystemdComposeError
 from systemd_compose.parser import parse_compose_file
+
+
+@pytest.fixture(autouse=True)
+def bypass_preflight(monkeypatch, request):
+    if "real_preflight" in request.keywords:
+        return
+    monkeypatch.setattr(systemd_compose.cli, "preflight_required_host_tools", lambda: None)
 
 
 def patch_run_command(monkeypatch, fake_run_command):
@@ -70,6 +80,36 @@ services:
         encoding="utf-8",
     )
     return compose_file
+
+
+@pytest.mark.real_preflight
+def test_preflight_accepts_required_host_tools(monkeypatch):
+    monkeypatch.setattr(systemd_compose.cli.os.path, "isfile", lambda path: path == "/usr/bin/bwrap")
+    monkeypatch.setattr(systemd_compose.cli.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+
+    systemd_compose.cli.preflight_required_host_tools()
+
+
+@pytest.mark.real_preflight
+def test_preflight_reports_all_missing_required_host_tools(monkeypatch):
+    monkeypatch.setattr(systemd_compose.cli.os.path, "isfile", lambda _path: False)
+    monkeypatch.setattr(systemd_compose.cli.shutil, "which", lambda _tool: None)
+
+    with pytest.raises(SystemdComposeError, match="missing required host tool"):
+        systemd_compose.cli.preflight_required_host_tools()
+
+
+@pytest.mark.real_preflight
+def test_main_reports_preflight_errors_before_command_handling(tmp_path: Path, monkeypatch, capsys):
+    compose_file = write_compose_file(tmp_path)
+    monkeypatch.setattr(systemd_compose.cli.os.path, "isfile", lambda _path: False)
+    monkeypatch.setattr(systemd_compose.cli.shutil, "which", lambda _tool: None)
+
+    exit_code = main(["-f", str(compose_file), "-p", "demo", "up", "--dry-run"])
+
+    assert exit_code == 2
+    error = capsys.readouterr().err
+    assert "missing required host tool(s): /usr/bin/bwrap, systemd-run, systemctl, journalctl" in error
 
 
 def test_up_dry_run_prints_systemd_run_with_bwrap_payload(tmp_path: Path, capsys):

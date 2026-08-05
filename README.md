@@ -27,6 +27,15 @@ The project intentionally avoids wrapper scripts, PID files, lock files,
 background daemons, service state databases, and app-owned runtime metadata.
 State lives in systemd and the journal.
 
+Every command preflights the required host tools before it runs:
+
+- `/usr/bin/bwrap`
+- `systemd-run`
+- `systemctl`
+- `journalctl`
+
+Help output is handled by the argument parser and does not run preflight.
+
 Transient units are created without `systemd-run --collect`. Exited or failed
 units can remain visible to `status`, `ps`, `start`, and `up` until they are
 stopped, reset, unloaded by systemd, or removed with `down`. This favors

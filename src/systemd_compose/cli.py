@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import shlex
 import subprocess
 import sys
 import time
 
 from systemd_compose.builders import (
+    BWRAP_PATH,
     build_health_systemd_run_command,
     build_systemd_run_command,
     health_unit_name,
@@ -61,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        preflight_required_host_tools()
         exit_code = args.handler(args)
     except SystemdComposeError as exc:
         print(f"systemd-compose: {exc}", file=sys.stderr)
@@ -75,6 +78,22 @@ def main(argv: list[str] | None = None) -> int:
         return 130
 
     return exit_code if isinstance(exit_code, int) else 0
+
+
+def preflight_required_host_tools() -> None:
+    missing: list[str] = []
+    if not os.path.isfile(BWRAP_PATH):
+        missing.append(BWRAP_PATH)
+    for tool in ["systemd-run", "systemctl", "journalctl"]:
+        if shutil.which(tool) is None:
+            missing.append(tool)
+
+    if missing:
+        raise SystemdComposeError(
+            "missing required host tool(s): "
+            f"{', '.join(missing)}. "
+            "Install bubblewrap and systemd tools before running systemd-compose."
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -6,6 +6,38 @@ installed as persistent user or system units so they survive reboot. Service
 commands are executed through `/usr/bin/bwrap`; the CLI does not generate
 wrapper scripts, PID files, or temporary runtime state.
 
+## Current Design
+
+`systemd-compose` runs host commands as systemd services. It is not a container
+runtime and does not pull images, build images, create networks, proxy ports, or
+keep its own daemon or service database.
+
+The core model is:
+
+- The compose file is the source of truth at command time.
+- Each service becomes one systemd service unit named
+  `<project>-<service>.service`.
+- `up` creates transient user units with `systemd-run --user`.
+- `install` writes persistent unit files to systemd's user or system unit
+  directory and enables a generated `<project>.target`.
+- Every service command is executed directly through `/usr/bin/bwrap`.
+- Generated units carry a compact definition hash so `up` can detect changes.
+
+The project intentionally avoids wrapper scripts, PID files, lock files,
+background daemons, service state databases, and app-owned runtime metadata.
+State lives in systemd and the journal.
+
+Transient units are created without `systemd-run --collect`. Exited or failed
+units can remain visible to `status`, `ps`, `start`, and `up` until they are
+stopped, reset, unloaded by systemd, or removed with `down`. This favors
+inspectability over aggressive transient-unit cleanup.
+
+Dependencies are expressed with systemd `Requires=`, `After=`, and `BindsTo=`.
+A service definition hash includes its own dependency list, but not the full
+definition hash of each dependency. If a dependency's command or sandbox changes,
+run `up` for the dependency and restart dependent services when their behavior
+depends on that change.
+
 ## Quick Start
 
 Create a small `systemd-compose.yaml`:
@@ -189,6 +221,10 @@ When inspecting user units manually, use `systemctl --user`, not plain
 systemctl --user status demo-web.service
 ```
 
+Lifecycle commands `up`, `start`, `stop`, `restart`, and `down` can operate on
+installed system projects with `--system`. Inspection and log commands currently
+inspect user units only; they do not expose `--system` yet.
+
 ### View Logs
 
 ```bash
@@ -225,23 +261,72 @@ Resolution order:
 
 ### Services
 
-Supported service fields include:
+The supported schema is intentionally small. Unknown Compose features should be
+treated as unsupported unless they are listed here.
 
-- `command`
-- `working_dir`
-- `environment`
-- `volumes`
-- `tmpfs`
-- `depends_on`
-- `restart`
-- `mem_limit`
-- `cpus`
-- `pids_limit`
-- `healthcheck`
+Top-level fields:
 
-Before starting or restarting a service, missing host-side volume paths are
-created as directories, similar to Docker Compose bind mount behavior. Dry runs
-do not create directories.
+- `name`: Optional non-empty string. Used as the project name when
+  `--project-name` is not provided.
+- `services`: Required non-empty mapping of service names to service
+  definitions.
+
+Service names must be non-empty strings. Names are sanitized when converted to
+systemd unit names.
+
+Supported service fields:
+
+- `command`: Required non-empty string or non-empty list of strings. String
+  commands are split with shell-like quoting. List commands are used as argv.
+- `working_dir`: Optional non-empty string. Passed to `bwrap --chdir`.
+- `environment`: Optional mapping or list of `KEY=VALUE` strings. Values from a
+  mapping are converted to strings.
+- `volumes`: Optional list of string bind mounts in `HOST:SANDBOX` or
+  `HOST:SANDBOX:ro` form. Only `:ro` is accepted as a mode.
+- `tmpfs`: Optional non-empty string or list of non-empty strings. Each value is
+  passed to `bwrap --tmpfs`.
+- `depends_on`: Optional list of service names or mapping whose keys are service
+  names. Conditions and other Compose dependency options are ignored; only the
+  service names are used.
+- `restart`: Optional non-empty string passed through to systemd `Restart=`.
+  Invalid systemd restart policies may fail when systemd receives the unit.
+- `mem_limit`: Optional positive integer byte count or positive size string
+  using `b`, `k`, `m`, `g`, `t`, `p`, or `e` suffixes.
+- `cpus`: Optional positive number or percentage string. Numeric values are
+  converted to systemd `CPUQuota=`, so `0.5` becomes `50%`.
+- `pids_limit`: Optional positive integer mapped to systemd `TasksMax=`.
+- `healthcheck`: Optional mapping documented below.
+
+Unsupported Compose features include:
+
+- `image`
+- `build`
+- `ports`
+- `networks`
+- named volumes
+- `.env` files
+- Compose-style interpolation
+- structured bind syntax such as `type: bind`
+- full Compose `deploy.resources`
+- service-level `resources`
+
+Use `mem_limit`, `cpus`, and `pids_limit` instead of `resources` or
+`deploy.resources`.
+
+### Bind Mounts
+
+`volumes` currently supports string bind syntax only:
+
+```yaml
+volumes:
+  - "/srv/site:/app"
+  - "/srv/config:/etc/my-app:ro"
+```
+
+Before starting or restarting a service, missing host-side bind sources are
+created as directories, including read-only binds. Dry runs do not create
+directories. File binds, explicit file-versus-directory behavior, named volumes,
+and structured bind syntax are not modeled yet.
 
 ### Resource Limits
 
@@ -269,6 +354,19 @@ I/O is commonly unavailable for ordinary user services.
 ### Healthchecks
 
 Services can define Docker Compose-like healthchecks.
+
+Supported `healthcheck` fields:
+
+- `test`: Required string or list. Lists must start with `CMD`, `CMD-SHELL`, or
+  `NONE`. `NONE` disables the healthcheck.
+- `interval`: Optional non-negative duration. Default: `30s`.
+- `timeout`: Optional non-negative duration. Default: `30s`.
+- `start_period`: Optional non-negative duration. Default: `0s`.
+- `retries`: Optional positive integer. Default: `3`.
+- `disable`: Optional boolean. When true, disables the healthcheck.
+
+Durations may be numbers, which are treated as seconds, or strings using `ms`,
+`s`, `m`, or `h` suffixes.
 
 Healthchecks run as companion transient systemd timer/service units:
 

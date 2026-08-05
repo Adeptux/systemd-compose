@@ -283,7 +283,7 @@ def handle_up(args: argparse.Namespace) -> int | None:
     for service_name in service_names:
         service = config.services[service_name]
         unit = unit_name(project_name, service_name)
-        command = build_systemd_run_command(project_name, service_name, service)
+        command = build_systemd_run_command(project_name, service_name, service, config.services)
         health_command = build_health_systemd_run_command(project_name, service_name, service)
         if args.dry_run:
             print(shlex.join(command))
@@ -291,7 +291,7 @@ def handle_up(args: argparse.Namespace) -> int | None:
                 print(shlex.join(health_command))
         else:
             loaded_unit = inspect_unit(unit)
-            desired_hash = service_definition_hash(project_name, service_name, service)
+            desired_hash = service_definition_hash(project_name, service_name, service, config.services)
             if loaded_unit.load_state == "loaded" and should_skip_loaded_unit(loaded_unit, desired_hash):
                 print(f"Skipping unchanged running unit: {unit}.service")
                 continue

@@ -42,10 +42,11 @@ stopped, reset, unloaded by systemd, or removed with `down`. This favors
 inspectability over aggressive transient-unit cleanup.
 
 Dependencies are expressed with systemd `Requires=`, `After=`, and `BindsTo=`.
-A service definition hash includes its own dependency list, but not the full
-definition hash of each dependency. If a dependency's command or sandbox changes,
-run `up` for the dependency and restart dependent services when their behavior
-depends on that change.
+A service definition hash includes its own dependency list and the definition
+hashes of direct dependencies. If `web` depends on `db`, a `db` definition
+change also changes `web`'s desired hash, so `up` recreates or restarts both
+services. This propagation is intentionally direct only; indirect dependencies
+should be declared explicitly when a service needs to restart with them.
 
 ## Quick Start
 

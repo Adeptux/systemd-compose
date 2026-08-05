@@ -63,6 +63,7 @@ def desired_unit_files(
             project_name,
             service_name,
             service,
+            services,
         )
         health_service = build_installed_health_service_unit(project_name, service_name, service)
         health_timer = build_installed_health_timer_unit(project_name, service_name, service)

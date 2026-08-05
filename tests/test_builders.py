@@ -183,3 +183,51 @@ def test_service_definition_hash_changes_when_healthcheck_changes():
     assert service_definition_hash("demo", "web", base_service) != service_definition_hash(
         "demo", "web", checked_service
     )
+
+
+def test_service_definition_hash_changes_when_direct_dependency_definition_changes():
+    original_services = {
+        "db": Service(name="db", command="postgres -D /tmp/db"),
+        "web": Service(name="web", command="python -m http.server", depends_on=["db"]),
+    }
+    changed_services = {
+        "db": Service(name="db", command="postgres -D /srv/db"),
+        "web": Service(name="web", command="python -m http.server", depends_on=["db"]),
+    }
+
+    assert service_definition_hash(
+        "demo",
+        "web",
+        original_services["web"],
+        original_services,
+    ) != service_definition_hash(
+        "demo",
+        "web",
+        changed_services["web"],
+        changed_services,
+    )
+
+
+def test_service_definition_hash_does_not_include_indirect_dependency_definitions():
+    original_services = {
+        "cache": Service(name="cache", command="redis-server /tmp/redis.conf"),
+        "db": Service(name="db", command="postgres -D /tmp/db", depends_on=["cache"]),
+        "web": Service(name="web", command="python -m http.server", depends_on=["db"]),
+    }
+    changed_services = {
+        "cache": Service(name="cache", command="redis-server /srv/redis.conf"),
+        "db": Service(name="db", command="postgres -D /tmp/db", depends_on=["cache"]),
+        "web": Service(name="web", command="python -m http.server", depends_on=["db"]),
+    }
+
+    assert service_definition_hash(
+        "demo",
+        "web",
+        original_services["web"],
+        original_services,
+    ) == service_definition_hash(
+        "demo",
+        "web",
+        changed_services["web"],
+        changed_services,
+    )

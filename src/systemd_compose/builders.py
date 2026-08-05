@@ -79,13 +79,18 @@ def build_service_payload(service: Service) -> list[str]:
     return [BWRAP_PATH, *build_bwrap_args(service)]
 
 
-def build_systemd_run_command(project_name: str, service_name: str, service: Service) -> list[str]:
+def build_systemd_run_command(
+    project_name: str,
+    service_name: str,
+    service: Service,
+    services: dict[str, Service] | None = None,
+) -> list[str]:
     unit = unit_name(project_name, service_name)
     command = [
         "systemd-run",
         "--user",
         f"--unit={unit}",
-        f"--description={build_description(project_name, service_name, service)}",
+        f"--description={build_description(project_name, service_name, service, services)}",
         "-p",
         f"SyslogIdentifier={unit}",
     ]
@@ -159,11 +164,16 @@ def build_project_target_unit(project_name: str, wanted_units: list[str], *, sys
     )
 
 
-def build_installed_service_unit(project_name: str, service_name: str, service: Service) -> str:
+def build_installed_service_unit(
+    project_name: str,
+    service_name: str,
+    service: Service,
+    services: dict[str, Service] | None = None,
+) -> str:
     unit = unit_name(project_name, service_name)
     lines = [
         "[Unit]",
-        f"Description={build_description(project_name, service_name, service)}",
+        f"Description={build_description(project_name, service_name, service, services)}",
         GENERATED_UNIT_MARKER,
     ]
     for dependency in service.depends_on:
@@ -257,10 +267,15 @@ def build_health_service_payload(service: Service) -> list[str]:
     return build_service_payload(health_service)
 
 
-def build_description(project_name: str, service_name: str, service: Service) -> str:
+def build_description(
+    project_name: str,
+    service_name: str,
+    service: Service,
+    services: dict[str, Service] | None = None,
+) -> str:
     return (
         f"systemd-compose: {project_name} {service_name} "
-        f"{DESCRIPTION_HASH_PREFIX}{service_definition_hash(project_name, service_name, service)}"
+        f"{DESCRIPTION_HASH_PREFIX}{service_definition_hash(project_name, service_name, service, services)}"
     )
 
 
@@ -271,12 +286,39 @@ def build_health_description(project_name: str, service_name: str, service: Serv
     )
 
 
-def service_definition_hash(project_name: str, service_name: str, service: Service) -> str:
+def service_definition_hash(
+    project_name: str,
+    service_name: str,
+    service: Service,
+    services: dict[str, Service] | None = None,
+) -> str:
+    return _service_definition_hash(
+        project_name,
+        service_name,
+        service,
+        services,
+        include_dependency_definitions=True,
+    )
+
+
+def _service_definition_hash(
+    project_name: str,
+    service_name: str,
+    service: Service,
+    services: dict[str, Service] | None,
+    *,
+    include_dependency_definitions: bool,
+) -> str:
     data = {
         "unit": unit_name(project_name, service_name),
         "syslog_identifier": unit_name(project_name, service_name),
         "accounting": ACCOUNTING_PROPERTIES,
         "dependencies": [f"{unit_name(project_name, dependency)}.service" for dependency in service.depends_on],
+        "dependency_definitions": (
+            dependency_definition_hashes(project_name, service, services)
+            if include_dependency_definitions
+            else {}
+        ),
         "restart": service.restart,
         "resources": build_resource_properties(service.resources),
         "healthcheck": health_definition_hash(project_name, service_name, service) if service.healthcheck else None,
@@ -284,6 +326,28 @@ def service_definition_hash(project_name: str, service_name: str, service: Servi
     }
     encoded = json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def dependency_definition_hashes(
+    project_name: str,
+    service: Service,
+    services: dict[str, Service] | None,
+) -> dict[str, str]:
+    if services is None:
+        return {}
+    hashes: dict[str, str] = {}
+    for dependency in service.depends_on:
+        dependency_service = services.get(dependency)
+        if dependency_service is None:
+            continue
+        hashes[dependency] = _service_definition_hash(
+            project_name,
+            dependency,
+            dependency_service,
+            services,
+            include_dependency_definitions=False,
+        )
+    return hashes
 
 
 def extract_definition_hash(description: str) -> str | None:

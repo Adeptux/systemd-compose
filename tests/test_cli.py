@@ -299,7 +299,7 @@ def test_up_skips_loaded_units(tmp_path: Path, monkeypatch, capsys):
         if property_name == "ActiveState":
             return subprocess.CompletedProcess(command, 0, "active\n", "")
         service_name = unit.removeprefix("demo-").removesuffix(".service")
-        description_hash = service_definition_hash("demo", service_name, config.services[service_name])
+        description_hash = service_definition_hash("demo", service_name, config.services[service_name], config.services)
         return subprocess.CompletedProcess(
             command,
             0,
@@ -386,6 +386,80 @@ services:
     assert capsys.readouterr().out == "Recreating changed unit: demo-web.service\n"
 
 
+def test_up_recreates_dependent_when_dependency_definition_changes(tmp_path: Path, monkeypatch, capsys):
+    compose_file = tmp_path / "systemd-compose.yaml"
+    compose_file.write_text(
+        """
+services:
+  db:
+    command: "postgres -D /tmp/postgres-data"
+  web:
+    command: "python -m http.server 8000"
+    depends_on:
+      - db
+""".lstrip(),
+        encoding="utf-8",
+    )
+    old_config = parse_compose_file(compose_file)
+    compose_file.write_text(
+        """
+services:
+  db:
+    command: "postgres -D /srv/postgres-data"
+  web:
+    command: "python -m http.server 8000"
+    depends_on:
+      - db
+""".lstrip(),
+        encoding="utf-8",
+    )
+    run_calls: list[list[str]] = []
+
+    def fake_run_command_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[2] == "list-units":
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[2] in {"stop", "reset-failed"}:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        property_name = command[3].removeprefix("--property=")
+        unit = command[-1]
+        service_name = unit.removeprefix("demo-").removesuffix(".service")
+        if property_name == "LoadState":
+            return subprocess.CompletedProcess(command, 0, "loaded\n", "")
+        if property_name == "ActiveState":
+            return subprocess.CompletedProcess(command, 0, "active\n", "")
+        description_hash = service_definition_hash(
+            "demo",
+            service_name,
+            old_config.services[service_name],
+            old_config.services,
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            f"systemd-compose: demo {service_name} systemd-compose-hash={description_hash}\n",
+            "",
+        )
+
+    def fake_run_command(command: list[str], *, check: bool = True) -> int:
+        run_calls.append(command)
+        return 0
+
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
+    patch_run_command(monkeypatch, fake_run_command)
+
+    exit_code = main(["-f", str(compose_file), "-p", "demo", "up"])
+
+    assert exit_code == 0
+    assert [call[:3] for call in run_calls] == [
+        ["systemd-run", "--user", "--unit=demo-db"],
+        ["systemd-run", "--user", "--unit=demo-web"],
+    ]
+    assert capsys.readouterr().out == (
+        "Recreating changed unit: demo-db.service\n"
+        "Recreating changed unit: demo-web.service\n"
+    )
+
+
 def test_up_skips_service_when_loaded_dependency_failed(tmp_path: Path, monkeypatch, capsys):
     compose_file = tmp_path / "systemd-compose.yaml"
     compose_file.write_text(
@@ -413,7 +487,7 @@ services:
         property_name = command[3].removeprefix("--property=")
         unit = command[-1]
         service_name = unit.removeprefix("demo-").removesuffix(".service")
-        db_hash = service_definition_hash("demo", "db", config.services["db"])
+        db_hash = service_definition_hash("demo", "db", config.services["db"], config.services)
         values = {
             ("LoadState", "demo-db.service"): "loaded\n",
             ("LoadState", "demo-web.service"): "not-found\n",
@@ -1601,6 +1675,59 @@ services:
     assert "9000" in (config_home / "systemd" / "user" / "demo-web.service").read_text(encoding="utf-8")
     assert run_calls == [
         (["systemctl", "--user", "daemon-reload"], True),
+        (["systemctl", "--user", "restart", "demo-web.service"], False),
+        (["systemctl", "--user", "start", "demo.target"], False),
+    ]
+
+
+def test_up_for_installed_project_restarts_dependent_when_dependency_definition_changes(
+    tmp_path: Path,
+    monkeypatch,
+):
+    compose_file = tmp_path / "systemd-compose.yaml"
+    compose_file.write_text(
+        """
+services:
+  db:
+    command: "postgres -D /tmp/postgres-data"
+  web:
+    command: "python -m http.server 8000"
+    depends_on:
+      - db
+""".lstrip(),
+        encoding="utf-8",
+    )
+    config_home = tmp_path / "config"
+    run_calls: list[tuple[list[str], bool]] = []
+
+    def fake_run_command(command: list[str], *, check: bool = True) -> int:
+        run_calls.append((command, check))
+        return 0
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    patch_run_command(monkeypatch, fake_run_command)
+
+    assert main(["-f", str(compose_file), "-p", "demo", "install"]) == 0
+    run_calls.clear()
+    compose_file.write_text(
+        """
+services:
+  db:
+    command: "postgres -D /srv/postgres-data"
+  web:
+    command: "python -m http.server 8000"
+    depends_on:
+      - db
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    exit_code = main(["-f", str(compose_file), "-p", "demo", "up"])
+
+    assert exit_code == 0
+    assert run_calls == [
+        (["systemctl", "--user", "daemon-reload"], True),
+        (["systemctl", "--user", "restart", "demo-db.service"], False),
         (["systemctl", "--user", "restart", "demo-web.service"], False),
         (["systemctl", "--user", "start", "demo.target"], False),
     ]

@@ -1,0 +1,30 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Build Linux binary
+        run: scripts/build-nuitka-linux.sh
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/nuitka/systemd-compose-linux-x86_64
+            dist/nuitka/SHA256SUMS
+            dist/nuitka/help.txt
+            dist/nuitka/ldd-version.txt
+            dist/nuitka/glibc-symbols.txt

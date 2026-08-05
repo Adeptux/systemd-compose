@@ -193,6 +193,103 @@ def test_parse_compose_data_supports_none_healthcheck_test():
 
 
 @pytest.mark.parametrize(
+    ("service_name", "message"),
+    [
+        ("", "service names must be non-empty strings"),
+        (123, "service names must be non-empty strings"),
+        ("!!!", "must contain at least one valid unit-name character"),
+    ],
+)
+def test_parse_compose_data_rejects_invalid_service_names(service_name, message):
+    with pytest.raises(SystemdComposeError, match=message):
+        parse_compose_data(
+            {
+                "services": {
+                    service_name: {
+                        "command": "python -m http.server 8000",
+                    },
+                }
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("command", "message"),
+    [
+        ([], "command list cannot be empty"),
+        (["python", 8000], "command list must contain strings"),
+    ],
+)
+def test_parse_compose_data_rejects_invalid_command_lists(command, message):
+    with pytest.raises(SystemdComposeError, match=message):
+        parse_compose_data(
+            {
+                "services": {
+                    "web": {
+                        "command": command,
+                    },
+                }
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("volumes", "message"),
+    [
+        ("/srv/site:/app", "volumes must be a list"),
+        ([123], "volume entries must be strings"),
+        (["/srv/site"], "volume must be HOST:SANDBOX"),
+        ([":/app"], "volume must be HOST:SANDBOX"),
+        (["/srv/site:/app:rw"], "only :ro volume mode is supported"),
+    ],
+)
+def test_parse_compose_data_rejects_invalid_volumes(volumes, message):
+    with pytest.raises(SystemdComposeError, match=message):
+        parse_compose_data(
+            {
+                "services": {
+                    "web": {
+                        "command": "python -m http.server 8000",
+                        "volumes": volumes,
+                    },
+                }
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "tmpfs",
+    ["", ["/run", ""], [123], {"target": "/run"}],
+)
+def test_parse_compose_data_rejects_invalid_tmpfs(tmpfs):
+    with pytest.raises(SystemdComposeError, match="tmpfs must be a non-empty string"):
+        parse_compose_data(
+            {
+                "services": {
+                    "web": {
+                        "command": "python -m http.server 8000",
+                        "tmpfs": tmpfs,
+                    },
+                }
+            }
+        )
+
+
+def test_parse_compose_data_rejects_unknown_dependencies():
+    with pytest.raises(SystemdComposeError, match="depends on unknown service 'db'"):
+        parse_compose_data(
+            {
+                "services": {
+                    "web": {
+                        "command": "python -m http.server 8000",
+                        "depends_on": ["db"],
+                    },
+                }
+            }
+        )
+
+
+@pytest.mark.parametrize(
     ("service_values", "message"),
     [
         ({"cpus": "half"}, "resources.cpus must be a positive number or percentage"),

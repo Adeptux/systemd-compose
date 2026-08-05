@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any
 
 import yaml
@@ -11,6 +12,7 @@ from systemd_compose.models import ComposeConfig, Healthcheck, Resources, Servic
 RESOURCE_KEYS = {"mem_limit", "cpus", "pids_limit"}
 MEMORY_UNITS = {"b": "", "k": "K", "m": "M", "g": "G", "t": "T", "p": "P", "e": "E"}
 HEALTHCHECK_KEYS = {"test", "interval", "timeout", "start_period", "retries", "disable"}
+SERVICE_NAME_INVALID_RE = re.compile(r"[^A-Za-z0-9_.@-]+")
 RESTART_POLICIES = {
     "no",
     "always",
@@ -45,14 +47,15 @@ def parse_compose_data(data: Any, *, source: str = "<compose>") -> ComposeConfig
 
     services: dict[str, Service] = {}
     for name, raw_service in raw_services.items():
-        if not isinstance(name, str) or not name:
-            raise SystemdComposeError(f"{source}: service names must be non-empty strings")
+        _validate_service_name(name, source)
         if not isinstance(raw_service, dict):
             raise SystemdComposeError(f"{source}: service {name!r} must be a mapping")
 
         command = raw_service.get("command")
         if not isinstance(command, str | list) or command == "":
             raise SystemdComposeError(f"{source}: service {name!r} requires command")
+        if isinstance(command, list) and not command:
+            raise SystemdComposeError(f"{source}: service {name!r} command list cannot be empty")
         if isinstance(command, list) and not all(isinstance(part, str) for part in command):
             raise SystemdComposeError(f"{source}: service {name!r} command list must contain strings")
 
@@ -85,6 +88,16 @@ def _parse_project_name(value: Any, source: str) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
     raise SystemdComposeError(f"{source}: name must be a non-empty string")
+
+
+def _validate_service_name(value: Any, source: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise SystemdComposeError(f"{source}: service names must be non-empty strings")
+    cleaned = SERVICE_NAME_INVALID_RE.sub("-", value.strip()).strip("-")
+    if not cleaned:
+        raise SystemdComposeError(
+            f"{source}: service name {value!r} must contain at least one valid unit-name character"
+        )
 
 
 def _parse_environment(value: Any, source: str, service_name: str) -> dict[str, str]:

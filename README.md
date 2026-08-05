@@ -288,8 +288,9 @@ Supported service fields:
 - `depends_on`: Optional list of service names or mapping whose keys are service
   names. Conditions and other Compose dependency options are ignored; only the
   service names are used.
-- `restart`: Optional non-empty string passed through to systemd `Restart=`.
-  Invalid systemd restart policies may fail when systemd receives the unit.
+- `restart`: Optional systemd restart policy. Supported values are `no`,
+  `always`, `on-success`, `on-failure`, `on-abnormal`, `on-watchdog`, and
+  `on-abort`.
 - `mem_limit`: Optional positive integer byte count or positive size string
   using `b`, `k`, `m`, `g`, `t`, `p`, or `e` suffixes.
 - `cpus`: Optional positive number or percentage string. Numeric values are

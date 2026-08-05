@@ -11,6 +11,15 @@ from systemd_compose.models import ComposeConfig, Healthcheck, Resources, Servic
 RESOURCE_KEYS = {"mem_limit", "cpus", "pids_limit"}
 MEMORY_UNITS = {"b": "", "k": "K", "m": "M", "g": "G", "t": "T", "p": "P", "e": "E"}
 HEALTHCHECK_KEYS = {"test", "interval", "timeout", "start_period", "retries", "disable"}
+RESTART_POLICIES = {
+    "no",
+    "always",
+    "on-success",
+    "on-failure",
+    "on-abnormal",
+    "on-watchdog",
+    "on-abort",
+}
 
 
 def parse_compose_file(path: str | Path) -> ComposeConfig:
@@ -55,7 +64,7 @@ def parse_compose_data(data: Any, *, source: str = "<compose>") -> ComposeConfig
             tmpfs=_parse_tmpfs(raw_service.get("tmpfs"), source, name),
             depends_on=_parse_depends_on(raw_service.get("depends_on"), source, name),
             working_dir=_optional_string(raw_service, "working_dir", source, name),
-            restart=_optional_string(raw_service, "restart", source, name),
+            restart=_parse_restart(raw_service.get("restart"), source, name),
             resources=_parse_resources(raw_service, source, name),
             healthcheck=_parse_healthcheck(raw_service.get("healthcheck"), source, name),
         )
@@ -158,6 +167,24 @@ def _optional_string(raw_service: dict[str, Any], key: str, source: str, service
     if isinstance(value, str) and value:
         return value
     raise SystemdComposeError(f"{source}: service {service_name!r} {key} must be a non-empty string")
+
+
+def _parse_restart(value: Any, source: str, service_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise SystemdComposeError(f"{source}: service {service_name!r} restart must be a non-empty string")
+    if value in RESTART_POLICIES:
+        return value
+    if value == "unless-stopped":
+        raise SystemdComposeError(
+            f"{source}: service {service_name!r} restart value 'unless-stopped' is Docker Compose syntax "
+            "and has no direct systemd equivalent"
+        )
+    supported = ", ".join(sorted(RESTART_POLICIES))
+    raise SystemdComposeError(
+        f"{source}: service {service_name!r} restart must be one of: {supported}"
+    )
 
 
 def _parse_resources(raw_service: dict[str, Any], source: str, service_name: str) -> Resources | None:

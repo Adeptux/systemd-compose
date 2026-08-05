@@ -106,6 +106,56 @@ def test_parse_compose_data_supports_docker_like_healthcheck():
     assert healthcheck.disabled is False
 
 
+@pytest.mark.parametrize(
+    "restart",
+    [
+        "no",
+        "always",
+        "on-success",
+        "on-failure",
+        "on-abnormal",
+        "on-watchdog",
+        "on-abort",
+    ],
+)
+def test_parse_compose_data_supports_systemd_restart_policies(restart):
+    config = parse_compose_data(
+        {
+            "services": {
+                "web": {
+                    "command": "python -m http.server 8000",
+                    "restart": restart,
+                },
+            }
+        }
+    )
+
+    assert config.services["web"].restart == restart
+
+
+@pytest.mark.parametrize(
+    ("restart", "message"),
+    [
+        ("unless-stopped", "Docker Compose syntax"),
+        ("sometimes", "restart must be one of"),
+        ("", "restart must be a non-empty string"),
+        (True, "restart must be a non-empty string"),
+    ],
+)
+def test_parse_compose_data_rejects_invalid_restart_policy(restart, message):
+    with pytest.raises(SystemdComposeError, match=message):
+        parse_compose_data(
+            {
+                "services": {
+                    "web": {
+                        "command": "python -m http.server 8000",
+                        "restart": restart,
+                    },
+                }
+            }
+        )
+
+
 def test_parse_compose_data_supports_disabled_healthcheck():
     config = parse_compose_data(
         {

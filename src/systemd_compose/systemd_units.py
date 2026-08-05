@@ -14,8 +14,12 @@ RUNNING_SERVICE_STATES = {"active", "activating", "reloading"}
 MISSING_SYSTEMD_VALUES = {"", "[not set]", "[no data]", "infinity", "max", "18446744073709551615"}
 
 
-def unit_is_loaded(unit: str) -> bool:
-    return unit_property(unit, "LoadState") == "loaded"
+def systemctl_command(*, system: bool = False) -> list[str]:
+    return ["systemctl"] if system else ["systemctl", "--user"]
+
+
+def unit_is_loaded(unit: str, *, system: bool = False) -> bool:
+    return unit_property(unit, "LoadState", system=system) == "loaded"
 
 def blocked_dependency(project_name: str, dependencies: list[str]) -> tuple[str, str] | None:
     for dependency in dependencies:
@@ -27,9 +31,9 @@ def blocked_dependency(project_name: str, dependencies: list[str]) -> tuple[str,
             return dependency_unit, active_state
     return None
 
-def unit_property(unit: str, property_name: str) -> str:
+def unit_property(unit: str, property_name: str, *, system: bool = False) -> str:
     result = run_command_capture(
-        ["systemctl", "--user", "show", f"--property={property_name}", "--value", f"{unit}.service"]
+        [*systemctl_command(system=system), "show", f"--property={property_name}", "--value", f"{unit}.service"]
     )
     value = result.stdout.strip()
     if result.returncode == 0:
@@ -39,11 +43,11 @@ def unit_property(unit: str, property_name: str) -> str:
     emit_completed_process_output(result)
     raise SystemdComposeError(f"could not inspect unit {unit}.service")
 
-def unit_properties(unit: str, property_names: list[str]) -> dict[str, str]:
-    return unit_file_properties(f"{unit}.service", property_names)
+def unit_properties(unit: str, property_names: list[str], *, system: bool = False) -> dict[str, str]:
+    return unit_file_properties(f"{unit}.service", property_names, system=system)
 
-def unit_file_properties(unit_file: str, property_names: list[str]) -> dict[str, str]:
-    command = ["systemctl", "--user", "show"]
+def unit_file_properties(unit_file: str, property_names: list[str], *, system: bool = False) -> dict[str, str]:
+    command = [*systemctl_command(system=system), "show"]
     command.extend(f"--property={property_name}" for property_name in property_names)
     command.append(unit_file)
     result = run_command_capture(command)
@@ -66,13 +70,13 @@ class UnitInspection:
         self.active_state = active_state
         self.definition_hash = definition_hash
 
-def inspect_unit(unit: str) -> UnitInspection:
-    load_state = unit_property(unit, "LoadState")
+def inspect_unit(unit: str, *, system: bool = False) -> UnitInspection:
+    load_state = unit_property(unit, "LoadState", system=system)
     if load_state != "loaded":
         return UnitInspection(load_state=load_state, active_state="inactive", definition_hash=None)
 
-    active_state = unit_property(unit, "ActiveState")
-    description = unit_property(unit, "Description")
+    active_state = unit_property(unit, "ActiveState", system=system)
+    description = unit_property(unit, "Description", system=system)
     return UnitInspection(
         load_state=load_state,
         active_state=active_state,

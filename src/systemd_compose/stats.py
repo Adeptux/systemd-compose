@@ -23,9 +23,9 @@ CGROUP_ROOT = Path("/sys/fs/cgroup")
 PROC_ROOT = Path("/proc")
 
 
-def collect_stats_snapshot(project_name: str, service_name: str) -> dict[str, str]:
+def collect_stats_snapshot(project_name: str, service_name: str, *, system: bool = False) -> dict[str, str]:
     unit = unit_name(project_name, service_name)
-    properties = unit_properties(unit, STATS_PROPERTIES)
+    properties = unit_properties(unit, STATS_PROPERTIES, system=system)
     properties["Name"] = unit
     properties["Service"] = service_name
     apply_cgroup_stats_fallbacks(properties)

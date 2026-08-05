@@ -28,22 +28,22 @@ HEALTH_PROPERTIES = [
 ]
 
 
-def build_ps_row(project_name: str, service_name: str, service: Service) -> list[str]:
+def build_ps_row(project_name: str, service_name: str, service: Service, *, system: bool = False) -> list[str]:
     unit = unit_name(project_name, service_name)
-    properties = unit_properties(unit, PS_PROPERTIES)
+    properties = unit_properties(unit, PS_PROPERTIES, system=system)
     return [
         unit,
         service_name,
         format_ps_status(properties),
-        build_health_cell(project_name, service_name, service, properties),
+        build_health_cell(project_name, service_name, service, properties, system=system),
         format_pid(properties.get("MainPID", "")),
         format_systemd_timestamp(properties.get("ExecMainStartTimestamp", "")),
         format_command(service),
     ]
 
-def build_health_row(project_name: str, service_name: str, service: Service) -> list[str]:
+def build_health_row(project_name: str, service_name: str, service: Service, *, system: bool = False) -> list[str]:
     unit = unit_name(project_name, service_name)
-    health, last_check = collect_health_status(project_name, service_name, service)
+    health, last_check = collect_health_status(project_name, service_name, service, system=system)
     return [unit, service_name, health, last_check]
 
 def build_health_cell(
@@ -51,8 +51,10 @@ def build_health_cell(
     service_name: str,
     service: Service,
     main_properties: dict[str, str],
+    *,
+    system: bool = False,
 ) -> str:
-    health, _last_check = collect_health_status(project_name, service_name, service, main_properties)
+    health, _last_check = collect_health_status(project_name, service_name, service, main_properties, system=system)
     return health
 
 def collect_health_status(
@@ -60,6 +62,8 @@ def collect_health_status(
     service_name: str,
     service: Service,
     main_properties: dict[str, str] | None = None,
+    *,
+    system: bool = False,
 ) -> tuple[str, str]:
     unit = unit_name(project_name, service_name)
     if service.healthcheck is None:
@@ -68,14 +72,14 @@ def collect_health_status(
         return ("disabled", "-")
 
     if main_properties is None:
-        main_properties = unit_properties(unit, ["LoadState", "ActiveState"])
+        main_properties = unit_properties(unit, ["LoadState", "ActiveState"], system=system)
     if main_properties.get("LoadState") != "loaded":
         return ("not created", "-")
     if main_properties.get("ActiveState") not in RUNNING_SERVICE_STATES:
         return (main_properties.get("ActiveState", "inactive") or "inactive", "-")
 
     health_unit = health_unit_name(project_name, service_name)
-    properties = unit_file_properties(f"{health_unit}.service", HEALTH_PROPERTIES)
+    properties = unit_file_properties(f"{health_unit}.service", HEALTH_PROPERTIES, system=system)
     health = format_health_status(properties)
     return (health, format_systemd_timestamp(properties.get("InactiveExitTimestamp", "")))
 

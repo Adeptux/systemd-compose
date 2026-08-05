@@ -82,6 +82,21 @@ services:
     return compose_file
 
 
+def write_generated_target(directory: Path, project_name: str = "demo") -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{project_name}.target"
+    path.write_text("X-SystemdCompose=1\n", encoding="utf-8")
+    return path
+
+
+def mark_system_project_installed(tmp_path: Path, monkeypatch, project_name: str = "demo") -> Path:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user-config"))
+    system_unit_dir = tmp_path / "system-units"
+    monkeypatch.setattr(systemd_compose.persistence, "SYSTEM_UNIT_DIR", system_unit_dir)
+    write_generated_target(system_unit_dir, project_name)
+    return system_unit_dir
+
+
 @pytest.mark.real_preflight
 def test_preflight_accepts_required_host_tools(monkeypatch):
     monkeypatch.setattr(systemd_compose.cli.os.path, "isfile", lambda path: path == "/usr/bin/bwrap")
@@ -611,6 +626,28 @@ def test_status_one_service_falls_back_to_current_directory_without_compose_file
     ]
 
 
+def test_status_auto_detects_system_installed_project(tmp_path: Path, monkeypatch):
+    compose_file = write_compose_file(tmp_path)
+    mark_system_project_installed(tmp_path, monkeypatch)
+    calls: list[tuple[list[str], bool]] = []
+
+    def fake_run_command(command: list[str], *, check: bool = True) -> int:
+        calls.append((command, check))
+        return 0
+
+    patch_run_command(monkeypatch, fake_run_command)
+
+    exit_code = main(["-f", str(compose_file), "-p", "demo", "status"])
+
+    assert exit_code == 0
+    assert calls == [
+        (
+            ["systemctl", "--no-pager", "status", "demo-web.service", "demo-db.service"],
+            False,
+        ),
+    ]
+
+
 def test_ps_prints_service_snapshot(tmp_path: Path, monkeypatch, capsys):
     compose_file = write_compose_file(tmp_path)
     captured_calls: list[list[str]] = []
@@ -746,6 +783,36 @@ def test_ps_prints_health_status_for_healthchecked_service(tmp_path: Path, monke
     ]
 
 
+def test_ps_auto_detects_system_installed_project(tmp_path: Path, monkeypatch, capsys):
+    compose_file = write_single_service_compose_file(tmp_path)
+    mark_system_project_installed(tmp_path, monkeypatch)
+    captured_calls: list[list[str]] = []
+
+    def fake_run_command_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
+        captured_calls.append(command)
+        return subprocess.CompletedProcess(command, 5, "", "Unit demo-web.service not loaded.\n")
+
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
+
+    exit_code = main(["-f", str(compose_file), "-p", "demo", "ps"])
+
+    assert exit_code == 0
+    assert "not created" in capsys.readouterr().out
+    assert captured_calls == [
+        [
+            "systemctl",
+            "show",
+            "--property=Id",
+            "--property=LoadState",
+            "--property=ActiveState",
+            "--property=SubState",
+            "--property=MainPID",
+            "--property=ExecMainStartTimestamp",
+            "demo-web.service",
+        ],
+    ]
+
+
 def test_stats_no_stream_prints_service_snapshot(tmp_path: Path, monkeypatch, capsys):
     compose_file = write_compose_file(tmp_path)
 
@@ -788,6 +855,58 @@ def test_stats_no_stream_prints_service_snapshot(tmp_path: Path, monkeypatch, ca
     assert "4.0KiB / 8.0KiB" in output
     assert "demo-db" in output
     assert " - " in output
+
+
+def test_stats_auto_detects_system_installed_project(tmp_path: Path, monkeypatch, capsys):
+    compose_file = write_single_service_compose_file(tmp_path)
+    mark_system_project_installed(tmp_path, monkeypatch)
+    captured_calls: list[list[str]] = []
+
+    def fake_run_command_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
+        captured_calls.append(command)
+        return subprocess.CompletedProcess(command, 5, "", "Unit demo-web.service not loaded.\n")
+
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
+    monkeypatch.setattr(systemd_compose.cli.time, "sleep", lambda _interval: None)
+
+    exit_code = main(["-f", str(compose_file), "-p", "demo", "stats", "--no-stream"])
+
+    assert exit_code == 0
+    assert "demo-web" in capsys.readouterr().out
+    assert captured_calls == [
+        [
+            "systemctl",
+            "show",
+            "--property=Id",
+            "--property=ActiveState",
+            "--property=ControlGroup",
+            "--property=CPUUsageNSec",
+            "--property=MemoryCurrent",
+            "--property=MemoryMax",
+            "--property=IPIngressBytes",
+            "--property=IPEgressBytes",
+            "--property=IOReadBytes",
+            "--property=IOWriteBytes",
+            "--property=TasksCurrent",
+            "demo-web.service",
+        ],
+        [
+            "systemctl",
+            "show",
+            "--property=Id",
+            "--property=ActiveState",
+            "--property=ControlGroup",
+            "--property=CPUUsageNSec",
+            "--property=MemoryCurrent",
+            "--property=MemoryMax",
+            "--property=IPIngressBytes",
+            "--property=IPEgressBytes",
+            "--property=IOReadBytes",
+            "--property=IOWriteBytes",
+            "--property=TasksCurrent",
+            "demo-web.service",
+        ],
+    ]
 
 
 def test_health_prints_service_health_status(tmp_path: Path, monkeypatch, capsys):
@@ -870,6 +989,34 @@ def test_health_prints_none_for_service_without_healthcheck(tmp_path: Path, monk
     output = capsys.readouterr().out
     assert "none" in output
     assert captured_calls == []
+
+
+def test_health_auto_detects_system_installed_project(tmp_path: Path, monkeypatch, capsys):
+    compose_file = write_health_compose_file(tmp_path)
+    mark_system_project_installed(tmp_path, monkeypatch)
+    captured_calls: list[list[str]] = []
+
+    def fake_run_command_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
+        captured_calls.append(command)
+        if command[-1] == "demo-web.service":
+            return subprocess.CompletedProcess(command, 0, "LoadState=not-found\nActiveState=inactive\n", "")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(systemd_compose.systemd_units, "run_command_capture", fake_run_command_capture)
+
+    exit_code = main(["-f", str(compose_file), "-p", "demo", "health"])
+
+    assert exit_code == 0
+    assert "not created" in capsys.readouterr().out
+    assert captured_calls == [
+        [
+            "systemctl",
+            "show",
+            "--property=LoadState",
+            "--property=ActiveState",
+            "demo-web.service",
+        ],
+    ]
 
 
 def test_format_health_status_uses_result_from_unloaded_transient_service():
@@ -1592,6 +1739,32 @@ def test_logs_follow_is_opt_in(monkeypatch):
     ]
 
 
+def test_logs_auto_detects_system_installed_project(tmp_path: Path, monkeypatch):
+    compose_file = write_single_service_compose_file(tmp_path)
+    mark_system_project_installed(tmp_path, monkeypatch)
+    calls: list[tuple[list[str], bool]] = []
+
+    def fake_run_command(command: list[str], *, check: bool = True) -> int:
+        calls.append((command, check))
+        return 0
+
+    patch_run_command(monkeypatch, fake_run_command)
+
+    exit_code = main(["-f", str(compose_file), "-p", "demo", "logs"])
+
+    assert exit_code == 0
+    assert calls == [
+        (
+            [
+                "journalctl",
+                "-u",
+                "demo-web.service",
+            ],
+            True,
+        ),
+    ]
+
+
 def test_install_writes_user_units_and_enables_project_target(tmp_path: Path, monkeypatch):
     compose_file = write_health_compose_file(tmp_path)
     config_home = tmp_path / "config"
@@ -1644,6 +1817,47 @@ def test_install_system_writes_system_units_and_uses_systemctl(tmp_path: Path, m
         (["systemctl", "daemon-reload"], True),
         (["systemctl", "enable", "demo.target"], True),
     ]
+
+
+def test_install_user_rejects_existing_system_project_name(tmp_path: Path, monkeypatch, capsys):
+    compose_file = write_single_service_compose_file(tmp_path)
+    mark_system_project_installed(tmp_path, monkeypatch)
+    run_calls: list[tuple[list[str], bool]] = []
+
+    def fake_run_command(command: list[str], *, check: bool = True) -> int:
+        run_calls.append((command, check))
+        return 0
+
+    patch_run_command(monkeypatch, fake_run_command)
+
+    exit_code = main(["-f", str(compose_file), "-p", "demo", "install"])
+
+    assert exit_code == 2
+    assert "already installed as a system project" in capsys.readouterr().err
+    assert run_calls == []
+
+
+def test_install_system_rejects_visible_existing_user_project_name(tmp_path: Path, monkeypatch, capsys):
+    compose_file = write_single_service_compose_file(tmp_path)
+    config_home = tmp_path / "config"
+    system_unit_dir = tmp_path / "system-units"
+    write_generated_target(config_home / "systemd" / "user")
+    run_calls: list[tuple[list[str], bool]] = []
+
+    def fake_run_command(command: list[str], *, check: bool = True) -> int:
+        run_calls.append((command, check))
+        return 0
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.setattr(systemd_compose.persistence, "SYSTEM_UNIT_DIR", system_unit_dir)
+    monkeypatch.setattr(systemd_compose.persistence.os, "geteuid", lambda: 0)
+    patch_run_command(monkeypatch, fake_run_command)
+
+    exit_code = main(["-f", str(compose_file), "-p", "demo", "install", "--system"])
+
+    assert exit_code == 2
+    assert "already installed as a user project" in capsys.readouterr().err
+    assert run_calls == []
 
 
 def test_up_for_installed_project_updates_changed_unit_and_restarts_it(tmp_path: Path, monkeypatch):

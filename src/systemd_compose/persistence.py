@@ -47,6 +47,19 @@ def project_is_installed(project_name: str, *, system: bool = False) -> bool:
     return _is_generated_unit(target_unit_path(project_name, system=system))
 
 
+def require_no_opposite_scope_project(project_name: str, *, system: bool = False) -> None:
+    opposite_system = not system
+    if not project_is_installed(project_name, system=opposite_system):
+        return
+    existing_scope = "system" if opposite_system else "user"
+    new_scope = "system" if system else "user"
+    raise SystemdComposeError(
+        f"project {project_name!r} is already installed as a {existing_scope} project; "
+        f"cannot also install it as a {new_scope} project. "
+        "Choose a different -p/--project-name or uninstall the existing project first."
+    )
+
+
 def desired_unit_files(
     project_name: str,
     services: dict[str, Service],

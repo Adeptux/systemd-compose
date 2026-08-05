@@ -163,6 +163,11 @@ target is enabled under `default.target`.
 Use `install --system` as root to write system units to `/etc/systemd/system/`
 and enable the project target under `multi-user.target`.
 
+Installed project names must be unique across visible user and system scopes.
+For example, a user install named `demo` is rejected when a generated system
+project named `demo` already exists. Choose a different `-p/--project-name` or
+uninstall the existing project first.
+
 Lifecycle meaning:
 
 - `install` makes the project survive reboot.
@@ -224,7 +229,9 @@ Inspection commands:
 - `stats --no-stream` prints a single sampled snapshot.
 - `health` reports healthcheck state for all services or the named service.
 
-When inspecting user units manually, use `systemctl --user`, not plain
+Inspection commands automatically choose user or system scope. User-installed
+projects are preferred, then system-installed projects, then transient user
+units. When inspecting user units manually, use `systemctl --user`, not plain
 `systemctl`. System installs use plain `systemctl`. For example:
 
 ```bash
@@ -232,8 +239,8 @@ systemctl --user status demo-web.service
 ```
 
 Lifecycle commands `up`, `start`, `stop`, `restart`, and `down` can operate on
-installed system projects with `--system`. Inspection and log commands currently
-inspect user units only; they do not expose `--system` yet.
+installed system projects with `--system`. Inspection and log commands infer the
+scope from the installed project when possible.
 
 ### View Logs
 

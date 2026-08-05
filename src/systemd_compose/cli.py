@@ -30,6 +30,7 @@ from systemd_compose.parser import parse_compose_file
 from systemd_compose.persistence import (
     installed_orphan_unit_names,
     project_is_installed,
+    require_no_opposite_scope_project,
     remove_orphan_unit_files,
     remove_unit_files,
     require_system_privileges,
@@ -331,6 +332,7 @@ def handle_install(args: argparse.Namespace) -> int:
     require_system_privileges(system=args.system)
     config = parse_compose_file(resolve_compose_file(args.file))
     project_name = resolve_project_name(args.project_name, config.name)
+    require_no_opposite_scope_project(project_name, system=args.system)
     ensure_all_volume_host_paths(config.services)
     changes = sync_unit_files(project_name, config.services, system=args.system)
     if args.remove_orphans:
@@ -449,6 +451,14 @@ def restart_installed_units(project_name: str, service_names: list[str], *, syst
 def ensure_all_volume_host_paths(services: dict[str, Service]) -> None:
     for service in services.values():
         ensure_volume_host_paths(service)
+
+
+def resolve_inspection_system_scope(project_name: str) -> bool:
+    if project_is_installed(project_name, system=False):
+        return False
+    if project_is_installed(project_name, system=True):
+        return True
+    return False
 
 
 def handle_start(args: argparse.Namespace) -> int:
@@ -581,17 +591,19 @@ def handle_status(args: argparse.Namespace) -> None:
         config = parse_compose_file(resolve_compose_file(args.file))
         service_names = list(config.services)
     project_name = resolve_project_name(args.project_name, config.name if config is not None else None)
+    system = resolve_inspection_system_scope(project_name)
 
     units = [f"{unit_name(project_name, service_name)}.service" for service_name in service_names]
-    return run_command(["systemctl", "--user", "--no-pager", "status", *units], check=False)
+    return run_command([*systemctl_command(system=system), "--no-pager", "status", *units], check=False)
 
 
 def handle_ps(args: argparse.Namespace) -> None:
     config = parse_compose_file(resolve_compose_file(args.file))
     project_name = resolve_project_name(args.project_name, config.name)
+    system = resolve_inspection_system_scope(project_name)
     service_names = selected_service_names(config.services, args.services)
     rows = [
-        build_ps_row(project_name, service_name, config.services[service_name])
+        build_ps_row(project_name, service_name, config.services[service_name], system=system)
         for service_name in service_names
     ]
     print_table(["NAME", "SERVICE", "STATUS", "HEALTH", "PID", "STARTED", "COMMAND"], rows)
@@ -600,6 +612,7 @@ def handle_ps(args: argparse.Namespace) -> None:
 def handle_stats(args: argparse.Namespace) -> None:
     config = parse_compose_file(resolve_compose_file(args.file))
     project_name = resolve_project_name(args.project_name, config.name)
+    system = resolve_inspection_system_scope(project_name)
     service_names = selected_service_names(config.services, args.services)
     cpu_count = os.cpu_count() or 1
     if args.interval < 0:
@@ -608,13 +621,13 @@ def handle_stats(args: argparse.Namespace) -> None:
     if args.no_stream:
         previous_time = time.monotonic()
         previous = [
-            collect_stats_snapshot(project_name, service_name)
+            collect_stats_snapshot(project_name, service_name, system=system)
             for service_name in service_names
         ]
         time.sleep(args.interval)
         current_time = time.monotonic()
         current = [
-            collect_stats_snapshot(project_name, service_name)
+            collect_stats_snapshot(project_name, service_name, system=system)
             for service_name in service_names
         ]
         print(render_stats_table(current, previous, current_time, previous_time, cpu_count))
@@ -626,7 +639,7 @@ def handle_stats(args: argparse.Namespace) -> None:
     while True:
         current_time = time.monotonic()
         current = [
-            collect_stats_snapshot(project_name, service_name)
+            collect_stats_snapshot(project_name, service_name, system=system)
             for service_name in service_names
         ]
         table = render_stats_table(current, previous, current_time, previous_time, cpu_count)
@@ -643,9 +656,10 @@ def handle_stats(args: argparse.Namespace) -> None:
 def handle_health(args: argparse.Namespace) -> None:
     config = parse_compose_file(resolve_compose_file(args.file))
     project_name = resolve_project_name(args.project_name, config.name)
+    system = resolve_inspection_system_scope(project_name)
     service_names = selected_service_names(config.services, args.services)
     rows = [
-        build_health_row(project_name, service_name, config.services[service_name])
+        build_health_row(project_name, service_name, config.services[service_name], system=system)
         for service_name in service_names
     ]
     print_table(["NAME", "SERVICE", "HEALTH", "LAST CHECK"], rows)
@@ -670,8 +684,11 @@ def handle_logs(args: argparse.Namespace) -> None:
         else:
             service_names = list(config.services)
     project_name = resolve_project_name(args.project_name, config.name if config is not None else None)
+    system = resolve_inspection_system_scope(project_name)
 
-    command = ["journalctl", "--user"]
+    command = ["journalctl"]
+    if not system:
+        command.append("--user")
     if args.follow:
         command.append("-f")
     for service_name in service_names:

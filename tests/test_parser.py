@@ -1,7 +1,7 @@
 import pytest
 
 from systemd_compose.errors import SystemdComposeError
-from systemd_compose.parser import parse_compose_data
+from systemd_compose.parser import parse_compose_data, parse_compose_file
 
 
 def test_parse_compose_data_supports_core_service_fields():
@@ -38,6 +38,147 @@ def test_parse_compose_data_supports_core_service_fields():
     assert web.depends_on == ["db"]
     assert web.working_dir == "/app"
     assert web.restart == "on-failure"
+
+
+def test_parse_compose_file_interpolates_default_env_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("PORT", raising=False)
+    compose_file = tmp_path / "systemd-compose.yaml"
+    compose_file.write_text(
+        """
+services:
+  web:
+    command: "python -m http.server ${PORT}"
+    environment:
+      FROM_ENV_FILE: "${PORT}"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").write_text("PORT=9000\n", encoding="utf-8")
+
+    config = parse_compose_file(compose_file)
+
+    assert config.services["web"].command == "python -m http.server 9000"
+    assert config.services["web"].environment == {"FROM_ENV_FILE": "9000"}
+
+
+def test_parse_compose_file_uses_explicit_env_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("PORT", raising=False)
+    compose_file = tmp_path / "systemd-compose.yaml"
+    env_file = tmp_path / "custom.env"
+    compose_file.write_text(
+        """
+services:
+  web:
+    command: "python -m http.server ${PORT}"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    env_file.write_text("PORT=7000\n", encoding="utf-8")
+
+    config = parse_compose_file(compose_file, env_file=env_file)
+
+    assert config.services["web"].command == "python -m http.server 7000"
+
+
+def test_parse_compose_file_process_environment_overrides_env_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("PORT", "6000")
+    compose_file = tmp_path / "systemd-compose.yaml"
+    compose_file.write_text(
+        """
+services:
+  web:
+    command: "python -m http.server ${PORT}"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").write_text("PORT=9000\n", encoding="utf-8")
+
+    config = parse_compose_file(compose_file)
+
+    assert config.services["web"].command == "python -m http.server 6000"
+
+
+def test_parse_compose_file_supports_interpolation_defaults(tmp_path, monkeypatch):
+    monkeypatch.delenv("PORT", raising=False)
+    compose_file = tmp_path / "systemd-compose.yaml"
+    compose_file.write_text(
+        """
+services:
+  web:
+    command: "python -m http.server ${PORT:-8080}"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    config = parse_compose_file(compose_file)
+
+    assert config.services["web"].command == "python -m http.server 8080"
+
+
+def test_parse_compose_file_rejects_missing_interpolation_variables(tmp_path, monkeypatch):
+    monkeypatch.delenv("PORT", raising=False)
+    compose_file = tmp_path / "systemd-compose.yaml"
+    compose_file.write_text(
+        """
+services:
+  web:
+    command: "python -m http.server ${PORT}"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemdComposeError, match="missing interpolation variable 'PORT'"):
+        parse_compose_file(compose_file)
+
+
+def test_parse_compose_file_rejects_missing_explicit_env_file(tmp_path):
+    compose_file = tmp_path / "systemd-compose.yaml"
+    compose_file.write_text(
+        """
+services:
+  web:
+    command: "true"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemdComposeError, match="env file not found"):
+        parse_compose_file(compose_file, env_file=tmp_path / "missing.env")
+
+
+def test_parse_compose_file_rejects_malformed_env_file(tmp_path):
+    compose_file = tmp_path / "systemd-compose.yaml"
+    env_file = tmp_path / ".env"
+    compose_file.write_text(
+        """
+services:
+  web:
+    command: "true"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    env_file.write_text("export PORT=9000\n", encoding="utf-8")
+
+    with pytest.raises(SystemdComposeError, match="expected KEY=VALUE"):
+        parse_compose_file(compose_file, env_file=env_file)
+
+
+def test_env_file_values_are_not_automatically_injected_into_service_environment(tmp_path, monkeypatch):
+    monkeypatch.delenv("PORT", raising=False)
+    compose_file = tmp_path / "systemd-compose.yaml"
+    compose_file.write_text(
+        """
+services:
+  web:
+    command: "python -m http.server ${PORT}"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").write_text("PORT=9000\n", encoding="utf-8")
+
+    config = parse_compose_file(compose_file)
+
+    assert config.services["web"].environment == {}
 
 
 @pytest.mark.parametrize("name", ["", "   ", 123, True])

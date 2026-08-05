@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
 from typing import Any
@@ -13,6 +14,7 @@ RESOURCE_KEYS = {"mem_limit", "cpus", "pids_limit"}
 MEMORY_UNITS = {"b": "", "k": "K", "m": "M", "g": "G", "t": "T", "p": "P", "e": "E"}
 HEALTHCHECK_KEYS = {"test", "interval", "timeout", "start_period", "retries", "disable"}
 SERVICE_NAME_INVALID_RE = re.compile(r"[^A-Za-z0-9_.@-]+")
+INTERPOLATION_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?\}")
 RESTART_POLICIES = {
     "no",
     "always",
@@ -24,16 +26,72 @@ RESTART_POLICIES = {
 }
 
 
-def parse_compose_file(path: str | Path) -> ComposeConfig:
+def parse_compose_file(path: str | Path, *, env_file: str | Path | None = None) -> ComposeConfig:
     compose_path = Path(path)
     try:
-        loaded = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+        content = compose_path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise SystemdComposeError(f"compose file not found: {compose_path}") from exc
+
+    variables = load_interpolation_variables(compose_path, env_file=env_file)
+    try:
+        loaded = yaml.safe_load(interpolate_content(content, variables, source=str(compose_path)))
     except yaml.YAMLError as exc:
         raise SystemdComposeError(f"invalid YAML in {compose_path}: {exc}") from exc
 
     return parse_compose_data(loaded, source=str(compose_path))
+
+
+def load_interpolation_variables(compose_path: Path, *, env_file: str | Path | None) -> dict[str, str]:
+    if env_file is None:
+        default_env_file = compose_path.parent / ".env"
+        env_values = parse_env_file(default_env_file, required=False)
+    else:
+        env_values = parse_env_file(Path(env_file), required=True)
+    return {**env_values, **{key: value for key, value in os.environ.items()}}
+
+
+def parse_env_file(path: Path, *, required: bool) -> dict[str, str]:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        if required:
+            raise SystemdComposeError(f"env file not found: {path}") from exc
+        return {}
+
+    values: dict[str, str] = {}
+    for line_number, raw_line in enumerate(content.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, separator, value = line.partition("=")
+        key = key.strip()
+        if not separator or not key or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            raise SystemdComposeError(f"{path}:{line_number}: expected KEY=VALUE")
+        values[key] = parse_env_value(value.strip())
+    return values
+
+
+def parse_env_value(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    comment_index = value.find(" #")
+    if comment_index != -1:
+        value = value[:comment_index].rstrip()
+    return value
+
+
+def interpolate_content(content: str, variables: dict[str, str], *, source: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        key = match.group(1)
+        default = match.group(2)
+        if key in variables:
+            return variables[key]
+        if default is not None:
+            return default
+        raise SystemdComposeError(f"{source}: missing interpolation variable {key!r}")
+
+    return INTERPOLATION_RE.sub(replace, content)
 
 
 def parse_compose_data(data: Any, *, source: str = "<compose>") -> ComposeConfig:

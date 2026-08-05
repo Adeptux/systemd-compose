@@ -277,6 +277,22 @@ Resolution order:
 - Top-level `name:` in the compose file
 - Current directory name
 
+### Environment Interpolation
+
+Compose files support simple `${VAR}` and `${VAR:-default}` interpolation before
+YAML parsing.
+
+Variable resolution order:
+
+- Process environment
+- `.env` next to the compose file, or the file passed with `--env-file`
+- Default value from `${VAR:-default}`
+
+Missing variables without defaults fail with a clear error. Env files support
+`KEY=VALUE` lines, blank lines, comments, and optional single or double quotes
+around values. They do not support shell evaluation, `export`, command
+substitution, or automatic service environment injection.
+
 ### Services
 
 The supported schema is intentionally small. Unknown Compose features should be
@@ -323,8 +339,6 @@ Unsupported Compose features include:
 - `ports`
 - `networks`
 - named volumes
-- `.env` files
-- Compose-style interpolation
 - structured bind syntax such as `type: bind`
 - full Compose `deploy.resources`
 - service-level `resources`

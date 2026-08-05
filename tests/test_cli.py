@@ -149,6 +149,25 @@ def test_up_uses_project_name_from_compose_file(tmp_path: Path, capsys):
     assert "systemd-run --user --unit=embedded-web" in capsys.readouterr().out
 
 
+def test_up_uses_explicit_env_file_for_interpolation(tmp_path: Path, capsys):
+    compose_file = tmp_path / "systemd-compose.yaml"
+    env_file = tmp_path / "custom.env"
+    compose_file.write_text(
+        """
+services:
+  web:
+    command: "python -m http.server ${PORT}"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    env_file.write_text("PORT=7000\n", encoding="utf-8")
+
+    exit_code = main(["--env-file", str(env_file), "-f", str(compose_file), "-p", "demo", "up", "--dry-run"])
+
+    assert exit_code == 0
+    assert "http.server 7000" in capsys.readouterr().out
+
+
 def test_cli_project_name_overrides_compose_file_name(tmp_path: Path, capsys):
     compose_file = write_named_compose_file(tmp_path, "embedded")
 

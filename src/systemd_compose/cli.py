@@ -114,6 +114,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="project name used as the unit name prefix (default: compose name, then current directory name)",
     )
+    parser.add_argument(
+        "--env-file",
+        default=None,
+        help="env file used for compose interpolation (default: .env next to the compose file)",
+    )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -242,11 +247,11 @@ def load_config_for_project_name(args: argparse.Namespace):
     compose_file = resolve_compose_file(args.file)
     if args.file == DEFAULT_COMPOSE_FILE and not os.path.exists(compose_file):
         return None
-    return parse_compose_file(compose_file)
+    return parse_compose_file(compose_file, env_file=args.env_file)
 
 
 def handle_up(args: argparse.Namespace) -> int | None:
-    config = parse_compose_file(resolve_compose_file(args.file))
+    config = parse_compose_file(resolve_compose_file(args.file), env_file=args.env_file)
     project_name = resolve_project_name(args.project_name, config.name)
     service_names = selected_service_names(config.services, args.services)
     require_system_privileges(system=args.system)
@@ -330,7 +335,7 @@ def handle_up(args: argparse.Namespace) -> int | None:
 
 def handle_install(args: argparse.Namespace) -> int:
     require_system_privileges(system=args.system)
-    config = parse_compose_file(resolve_compose_file(args.file))
+    config = parse_compose_file(resolve_compose_file(args.file), env_file=args.env_file)
     project_name = resolve_project_name(args.project_name, config.name)
     require_no_opposite_scope_project(project_name, system=args.system)
     ensure_all_volume_host_paths(config.services)
@@ -462,7 +467,7 @@ def resolve_inspection_system_scope(project_name: str) -> bool:
 
 
 def handle_start(args: argparse.Namespace) -> int:
-    config = parse_compose_file(resolve_compose_file(args.file))
+    config = parse_compose_file(resolve_compose_file(args.file), env_file=args.env_file)
     project_name = resolve_project_name(args.project_name, config.name)
     service_names = selected_service_names(config.services, args.services)
     require_system_privileges(system=args.system)
@@ -494,7 +499,7 @@ def handle_start(args: argparse.Namespace) -> int:
 
 
 def handle_stop(args: argparse.Namespace) -> int:
-    config = parse_compose_file(resolve_compose_file(args.file))
+    config = parse_compose_file(resolve_compose_file(args.file), env_file=args.env_file)
     project_name = resolve_project_name(args.project_name, config.name)
     service_names = selected_service_names(config.services, args.services)
     require_system_privileges(system=args.system)
@@ -517,7 +522,7 @@ def handle_stop(args: argparse.Namespace) -> int:
 
 
 def handle_restart(args: argparse.Namespace) -> int:
-    config = parse_compose_file(resolve_compose_file(args.file))
+    config = parse_compose_file(resolve_compose_file(args.file), env_file=args.env_file)
     project_name = resolve_project_name(args.project_name, config.name)
     service_names = selected_service_names(config.services, args.services)
     require_system_privileges(system=args.system)
@@ -546,7 +551,7 @@ def handle_restart(args: argparse.Namespace) -> int:
 
 
 def handle_down(args: argparse.Namespace) -> int:
-    config = parse_compose_file(resolve_compose_file(args.file))
+    config = parse_compose_file(resolve_compose_file(args.file), env_file=args.env_file)
     project_name = resolve_project_name(args.project_name, config.name)
     service_names = selected_service_names(config.services, args.services)
     require_system_privileges(system=args.system)
@@ -590,14 +595,14 @@ def handle_status(args: argparse.Namespace) -> None:
             args.file != DEFAULT_COMPOSE_FILE
             or (args.project_name is None and os.path.exists(compose_file))
         )
-        config = parse_compose_file(compose_file) if should_load_config else None
+        config = parse_compose_file(compose_file, env_file=args.env_file) if should_load_config else None
         service_names = (
             selected_service_names(config.services, args.services)
             if config is not None
             else args.services
         )
     else:
-        config = parse_compose_file(resolve_compose_file(args.file))
+        config = parse_compose_file(resolve_compose_file(args.file), env_file=args.env_file)
         service_names = list(config.services)
     project_name = resolve_project_name(args.project_name, config.name if config is not None else None)
     system = resolve_inspection_system_scope(project_name)
@@ -607,7 +612,7 @@ def handle_status(args: argparse.Namespace) -> None:
 
 
 def handle_ps(args: argparse.Namespace) -> None:
-    config = parse_compose_file(resolve_compose_file(args.file))
+    config = parse_compose_file(resolve_compose_file(args.file), env_file=args.env_file)
     project_name = resolve_project_name(args.project_name, config.name)
     system = resolve_inspection_system_scope(project_name)
     service_names = selected_service_names(config.services, args.services)
@@ -619,7 +624,7 @@ def handle_ps(args: argparse.Namespace) -> None:
 
 
 def handle_stats(args: argparse.Namespace) -> None:
-    config = parse_compose_file(resolve_compose_file(args.file))
+    config = parse_compose_file(resolve_compose_file(args.file), env_file=args.env_file)
     project_name = resolve_project_name(args.project_name, config.name)
     system = resolve_inspection_system_scope(project_name)
     service_names = selected_service_names(config.services, args.services)
@@ -663,7 +668,7 @@ def handle_stats(args: argparse.Namespace) -> None:
 
 
 def handle_health(args: argparse.Namespace) -> None:
-    config = parse_compose_file(resolve_compose_file(args.file))
+    config = parse_compose_file(resolve_compose_file(args.file), env_file=args.env_file)
     project_name = resolve_project_name(args.project_name, config.name)
     system = resolve_inspection_system_scope(project_name)
     service_names = selected_service_names(config.services, args.services)
@@ -681,7 +686,7 @@ def handle_logs(args: argparse.Namespace) -> None:
         config = (
             load_config_for_project_name(args)
             if service_names
-            else parse_compose_file(resolve_compose_file(args.file))
+            else parse_compose_file(resolve_compose_file(args.file), env_file=args.env_file)
         )
     if not service_names:
         if args.health:
